@@ -1,0 +1,8 @@
+{
+  "name": "obsidian-web-vault",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js"
+  }
+}
