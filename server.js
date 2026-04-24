@@ -2,6 +2,7 @@
  * Local static server (Node, no dependencies).
  * Usage: node server.js
  *   PORT=8080 node server.js  (Unix)
+ *   OBSIDIAN_VAULT_DIR=/path/to/vault PORT=8080 node server.js
  *   set PORT=8080&& node server.js  (Windows cmd)
  */
 
@@ -9,6 +10,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const { getVaultRoot, handleVaultApi } = require('./vault-api/index.js');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 5173;
@@ -66,6 +68,8 @@ const server = http.createServer((req, res) => {
     res.end();
     return;
   }
+
+  if (handleVaultApi(req, res, pathname)) return;
 
   const rel = pathname === '/' || pathname === '' ? DEFAULT_FILE : pathname.replace(/^\/+/, '');
   const filePath = safeResolve(rel);
@@ -135,4 +139,9 @@ function listDir(res, dirPath) {
 server.listen(PORT, () => {
   console.log(`Static server at http://localhost:${PORT}/`);
   console.log(`Open: http://localhost:${PORT}/${encodeURIComponent(DEFAULT_FILE)}`);
+  const vaultRoot = getVaultRoot();
+  if (vaultRoot) {
+    console.log(`Vault API: http://localhost:${PORT}/api/vault`);
+    console.log(`Vault root: ${vaultRoot}`);
+  }
 });

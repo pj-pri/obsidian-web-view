@@ -309,10 +309,40 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "graphInMain": false
 }/*EDITMODE-END*/;
 
+const SAMPLE_DEFAULT_FILE = 'Welcome.md';
+
+function getVaultApiBaseUrl() {
+  const configured = window.OBSIDIAN_WEB_VAULT_CONFIG?.apiBaseUrl || '';
+  return configured.replace(/\/+$/, '');
+}
+
+function getVaultApiUrl(pathname = '/api/vault') {
+  const base = getVaultApiBaseUrl();
+  return base ? `${base}${pathname}` : pathname;
+}
+
+function firstFilePath(fileMap, preferredPath) {
+  const paths = Object.keys(fileMap).sort();
+  if (preferredPath && fileMap[preferredPath]) return preferredPath;
+  if (fileMap[SAMPLE_DEFAULT_FILE]) return SAMPLE_DEFAULT_FILE;
+  return paths[0] || null;
+}
+
+function normalizeTabs(fileMap, tabs, fallbackPath) {
+  const seen = new Set();
+  const nextTabs = (tabs || []).filter((tab) => {
+    if (!fileMap[tab] || seen.has(tab)) return false;
+    seen.add(tab);
+    return true;
+  });
+  if (!nextTabs.length && fallbackPath) nextTabs.push(fallbackPath);
+  return nextTabs;
+}
+
 function App() {
   const [files, setFiles] = useState(() => ({ ...window.SAMPLE_VAULT }));
-  const [openTabs, setOpenTabs] = useState(['Welcome.md']);
-  const [activeTab, setActiveTab] = useState('Welcome.md');
+  const [openTabs, setOpenTabs] = useState([SAMPLE_DEFAULT_FILE]);
+  const [activeTab, setActiveTab] = useState(SAMPLE_DEFAULT_FILE);
   const [collapsed, setCollapsed] = useState(new Set());
   const [rightTab, setRightTab] = useState('backlinks'); // backlinks | graph | tags | outgoing
   const [theme, setTheme] = useState(TWEAK_DEFAULTS.theme);
@@ -331,22 +361,68 @@ function App() {
   const [tweaksOpen, setTweaksOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [vaultSource, setVaultSource] = useState('sample');
+  const [vaultRoot, setVaultRoot] = useState('');
+  const [vaultApiBase] = useState(() => getVaultApiBaseUrl());
+  const [storageReady, setStorageReady] = useState(false);
 
   // Persistence
   useEffect(() => {
-    const saved = localStorage.getItem('obsidian-vault-state');
-    if (saved) {
+    let cancelled = false;
+
+    const readSavedState = () => {
       try {
-        const s = JSON.parse(saved);
-        if (s.files) setFiles(s.files);
-        if (s.activeTab) setActiveTab(s.activeTab);
-        if (s.openTabs) setOpenTabs(s.openTabs);
+        const raw = localStorage.getItem('obsidian-vault-state');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const applyVaultState = (nextFiles, source, preferredPath, savedState, nextRoot = '') => {
+      const firstPath = firstFilePath(nextFiles, preferredPath);
+      const nextTabs = normalizeTabs(nextFiles, savedState?.openTabs, firstPath);
+      const nextActive = nextFiles[savedState?.activeTab] ? savedState.activeTab : (nextTabs[0] || firstPath);
+      setFiles(nextFiles);
+      setOpenTabs(nextTabs);
+      setActiveTab(nextActive);
+      setVaultSource(source);
+      setVaultRoot(nextRoot);
+    };
+
+    const loadInitialState = async () => {
+      const saved = readSavedState();
+      try {
+        const response = await fetch(getVaultApiUrl('/api/vault'), { cache: 'no-store' });
+        if (!cancelled && response.ok) {
+          const data = await response.json();
+          applyVaultState(data.files || {}, 'server', data.defaultFile, saved, data.root || '');
+          setStorageReady(true);
+          return;
+        }
       } catch (e) {}
-    }
+
+      if (cancelled) return;
+      if (saved?.files) {
+        applyVaultState(saved.files, 'local', saved.activeTab, saved);
+      } else {
+        applyVaultState({ ...window.SAMPLE_VAULT }, 'sample', SAMPLE_DEFAULT_FILE, null);
+      }
+      setStorageReady(true);
+    };
+
+    void loadInitialState();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
   useEffect(() => {
-    localStorage.setItem('obsidian-vault-state', JSON.stringify({ files, activeTab, openTabs }));
-  }, [files, activeTab, openTabs]);
+    if (!storageReady) return;
+    const payload = { activeTab, openTabs };
+    if (vaultSource !== 'server') payload.files = files;
+    localStorage.setItem('obsidian-vault-state', JSON.stringify(payload));
+  }, [files, activeTab, openTabs, storageReady, vaultSource]);
 
   // Apply theme
   useEffect(() => {
@@ -1085,6 +1161,10 @@ function App() {
         <div className="sb-item">{graphData.links.length} links</div>
         {activeTab && <><div className="sb-item">·</div>
         <div className="sb-item">{stats.words} words, {stats.chars} chars</div></>}
+        <div className="sb-item">·</div>
+        <div className="sb-item" title={vaultApiBase || vaultRoot || 'Sample vault'}>
+          {vaultSource === 'server' ? 'live vault' : vaultSource === 'local' ? 'local session' : 'sample vault'}
+        </div>
         <div className="sb-spacer"></div>
         <button className="sb-btn" onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts">
           <Icon name="keyboard" size={11} />
@@ -1191,7 +1271,7 @@ function App() {
               onClick={() => { localStorage.removeItem('obsidian-vault-state'); location.reload(); }}
               style={{background: 'none', border: '1px solid var(--bg-modifier-border)', color: 'var(--text-muted)', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, flex: 1}}
             >
-              Reset vault to sample
+              {vaultSource === 'server' ? 'Reload from vault folder' : 'Reset vault to sample'}
             </button>
           </div>
         </div>
