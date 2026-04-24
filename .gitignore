@@ -22,3 +22,9 @@ Desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Local agent/runtime state
+.codex
+.codex/
+.omx
+.omx/
