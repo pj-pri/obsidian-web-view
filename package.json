@@ -1,8 +1,11 @@
 {
   "name": "obsidian-web-vault",
+  "version": "1.0.0",
+  "description": "Browser-based Obsidian-style markdown vault viewer and editor",
   "private": true,
   "scripts": {
     "start": "node server.js",
+    "dev": "node server.js",
     "serve": "node server.js"
   }
 }

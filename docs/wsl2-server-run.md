@@ -1,174 +1,121 @@
-# Running The Server In WSL2
+# 서버 실행 가이드
 
-## Purpose
+## 기본 실행
 
-This project runs as a small Node server.
-
-The same server can do two things:
-
-- serve the frontend
-- expose `GET /api/vault` when a vault directory is configured
-
-## Prerequisites
-
-- WSL2 with Node installed
-- this repo checked out inside WSL
-- optionally, an Obsidian vault path accessible from WSL
-
-Check Node:
+### 샘플 vault (파일 불필요)
 
 ```bash
-node -v
+node server.js
 ```
 
-## Start the frontend only
+브라우저에서 `http://localhost:5173` 열기
 
-If you just want the UI with sample data or local session data:
+### 실제 vault 연결
+
+**.env 파일 사용 (권장)**
 
 ```bash
-cd /home/ubuntu/test/obsidian-web-view
-PORT=3002 node server.js
+cp .env.example .env
+# .env 파일에서 OBSIDIAN_VAULT_DIR 경로 수정
+node server.js
 ```
 
-Open:
-
-- `http://localhost:3002/`
-
-## Start the frontend with live vault API
-
-If you want the same server to also return real markdown files from a vault:
+**환경변수 직접 지정**
 
 ```bash
-cd /home/ubuntu/test/obsidian-web-view
-OBSIDIAN_VAULT_DIR="/path/to/your/vault" PORT=3002 node server.js
+OBSIDIAN_VAULT_DIR=/path/to/vault node server.js
 ```
 
-Open:
-
-- frontend: `http://localhost:3002/`
-- API: `http://localhost:3002/api/vault`
-
-## Run the API as a separate service later
-
-The frontend is already prepared for this.
-
-If the API moves to another project or port:
-
-1. Run that API service separately
-2. Keep a compatible `GET /api/vault` response
-3. Update [config.js](/home/ubuntu/test/obsidian-web-view/config.js:1)
-
-Example:
-
-```js
-window.OBSIDIAN_WEB_VAULT_CONFIG = {
-  apiBaseUrl: 'http://localhost:4010',
-};
-```
-
-Then:
-
-- frontend: `http://localhost:3002/`
-- external API: `http://localhost:4010/api/vault`
-
-See also [rest-api-integration.md](/home/ubuntu/test/obsidian-web-view/docs/rest-api-integration.md:1).
-
-## Stop the server
-
-If it is running in the current terminal:
+**포트 변경**
 
 ```bash
-Ctrl+C
+PORT=8080 node server.js
 ```
 
-If you started it in the background and need to find the process:
+## Docker로 실행
 
 ```bash
-ss -ltnp | rg ':3002\b'
+# 이미지 빌드
+docker build -t obsidian-web-vault .
+
+# 실행
+docker run -d \
+  -p 5173:5173 \
+  -v /path/to/vault:/vault \
+  -e OBSIDIAN_VAULT_DIR=/vault \
+  --name obsidian-web-vault \
+  obsidian-web-vault
 ```
 
-## WSL2 notes
+## WSL2 환경
 
-### 1. Use WSL paths, not Windows paths
-
-Prefer:
+### 경로는 Linux 형식으로
 
 ```bash
+# 올바른 형식
 OBSIDIAN_VAULT_DIR="/mnt/c/Users/<you>/Documents/MyVault"
-```
 
-Not:
-
-```bash
+# 잘못된 형식
 OBSIDIAN_VAULT_DIR="C:\Users\<you>\Documents\MyVault"
 ```
 
-This server runs inside Linux, so it must receive a Linux-visible path.
+### Windows 브라우저에서 접근
 
-### 2. Windows browser access should use `localhost`
+WSL2 내부에서 서버가 실행 중이면 Windows 브라우저에서 `http://localhost:5173`으로 접근할 수 있습니다.
 
-In normal WSL2 usage, if the server listens on `3002` inside WSL, Windows can usually open:
-
-- `http://localhost:3002/`
-
-If that fails, verify the server is actually running in your own WSL terminal and not inside some isolated tool session.
-
-### 3. Port conflicts are easy to miss
-
-If `3002` is already in use, the server will fail to start.
-
-Check:
+접근이 안 되면 포트 사용 여부 확인:
 
 ```bash
-ss -ltnp | rg ':3002\b'
+ss -ltnp | grep ':5173'
 ```
 
-If needed, pick another port:
+## 환경변수
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `OBSIDIAN_VAULT_DIR` | (없음) | vault 폴더 절대 경로. 미설정 시 샘플 모드 |
+| `PORT` | `5173` | 서버 포트 |
+
+## 동작 모드
+
+| 모드 | 조건 | 기능 |
+|------|------|------|
+| **server** | `OBSIDIAN_VAULT_DIR` 설정됨 | 읽기·쓰기·삭제·검색 전체 |
+| **local** | 이전 브라우저 세션 존재 | 브라우저 localStorage 저장 |
+| **sample** | 그 외 | 내장 샘플 파일, 읽기 전용 |
+
+현재 모드는 화면 우하단 상태바에 표시됩니다.
+
+## 스모크 테스트
+
+서버 시작 후 API 정상 동작 확인:
 
 ```bash
-PORT=3003 node server.js
+# 파일 목록
+curl -s http://localhost:5173/api/vault/files
+
+# 전체 텍스트 검색
+curl -s "http://localhost:5173/api/vault/search?q=hello"
+
+# 파일 생성
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"content":"# Test\n"}' \
+  http://localhost:5173/api/vault/files/test.md
 ```
 
-### 4. API and frontend origin matter
+## 제외되는 폴더
 
-If the API is moved to another port or project, the browser is making a cross-origin request.
+vault 내 다음 폴더는 자동으로 제외됩니다:
 
-That means:
+- `.git`, `.obsidian`, `node_modules`, `.trash`
+- `.`으로 시작하는 숨김 폴더
 
-- `config.js` must point to the API origin
-- the API must allow CORS
+## 서버 종료
 
-The bundled `vault-api/index.js` already returns:
+현재 터미널에서 실행 중: `Ctrl+C`
 
-- `Access-Control-Allow-Origin: *`
-
-### 5. This project is currently read-only for live vault files
-
-The API reads markdown files from disk and returns them to the frontend.
-
-It does not write changes back to the Obsidian vault yet.
-
-### 6. Hidden folders are skipped
-
-The current API ignores:
-
-- `.obsidian`
-- `.git`
-- `node_modules`
-- hidden directories beginning with `.`
-
-This is intentional to avoid pulling app metadata and unrelated files into the note tree.
-
-## Quick smoke test
-
-After starting the server with a live vault:
+백그라운드 프로세스 종료:
 
 ```bash
-curl -s http://127.0.0.1:3002/api/vault
+pkill -f "node server.js"
 ```
-
-You should see JSON with:
-
-- `files`
-- `defaultFile`
-- `fileCount`
