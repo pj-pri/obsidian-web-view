@@ -4,7 +4,18 @@
  *   PORT=8080 node server.js  (Unix)
  *   OBSIDIAN_VAULT_DIR=/path/to/vault PORT=8080 node server.js
  *   set PORT=8080&& node server.js  (Windows cmd)
+ *
+ * .env file is loaded automatically if present.
  */
+
+// Load .env if present (no external deps)
+try {
+  const lines = require('fs').readFileSync(require('path').join(__dirname, '.env'), 'utf8').split('\n');
+  for (const line of lines) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
+  }
+} catch {}
 
 const http = require('http');
 const fs = require('fs');
@@ -54,12 +65,6 @@ function safeResolve(urlPathname) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Method Not Allowed');
-    return;
-  }
-
   let pathname;
   try {
     pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
@@ -69,7 +74,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API routes handle all HTTP methods (POST, PUT, DELETE, PATCH, OPTIONS, etc.)
   if (handleVaultApi(req, res, pathname)) return;
+
+  // Static file serving: GET and HEAD only
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Method Not Allowed');
+    return;
+  }
 
   const rel = pathname === '/' || pathname === '' ? DEFAULT_FILE : pathname.replace(/^\/+/, '');
   const filePath = safeResolve(rel);

@@ -38,7 +38,6 @@ const Icon = ({ name, size = 16 }) => {
 
 /* ---------- File tree helpers ---------- */
 
-// Snippet toolbar: clickable buttons that apply a snippet to the textarea
 function SnippetToolbar({ taRef }) {
   const apply = (snip) => {
     const ta = taRef.current;
@@ -58,25 +57,25 @@ function SnippetToolbar({ taRef }) {
     'div',
     { key: 'bold', cls: 'bold', label: 'B' },
     { key: 'italic', cls: 'italic', label: 'I' },
-    { key: 'strike', cls: '', label: 'S\u0336' },
-    { key: 'highlight', cls: '', label: '\u2B24', titleOverride: 'Highlight' },
+    { key: 'strike', cls: '', label: 'S̶' },
+    { key: 'highlight', cls: '', label: '⬤', titleOverride: 'Highlight' },
     'div',
-    { key: 'ul', cls: '', label: '\u2022' },
+    { key: 'ul', cls: '', label: '•' },
     { key: 'ol', cls: '', label: '1.' },
-    { key: 'task', cls: '', label: '\u2610' },
+    { key: 'task', cls: '', label: '☐' },
     'div',
     { key: 'wikilink', cls: '', label: '[[ ]]' },
-    { key: 'link', cls: '', label: '\uD83D\uDD17' },
+    { key: 'link', cls: '', label: '🔗' },
     { key: 'tag', cls: '', label: '#' },
     'div',
-    { key: 'quote', cls: '', label: '\u201C\u201D' },
-    { key: 'code', cls: '', label: '<\u2215>' },
+    { key: 'quote', cls: '', label: '“”' },
+    { key: 'code', cls: '', label: '<∕>' },
     { key: 'codeblock', cls: '', label: '{}' },
-    { key: 'table2', cls: '', label: '\u229E' },
-    { key: 'hr', cls: '', label: '\u2014' },
+    { key: 'table2', cls: '', label: '⊞' },
+    { key: 'hr', cls: '', label: '—' },
     'div',
-    { key: 'daily', cls: '', label: '\uD83D\uDCC5' },
-    { key: 'date', cls: '', label: '\uD83D\uDCC6' },
+    { key: 'daily', cls: '', label: '📅' },
+    { key: 'date', cls: '', label: '📆' },
   ];
   return (
     <div className="snippet-toolbar">
@@ -176,6 +175,7 @@ const SHORTCUT_GROUPS = [
     items: [
       { keys: ['Click'], label: 'Open a note from the sidebar' },
       { keys: ['Click'], label: 'Toggle folder expand/collapse' },
+      { keys: ['Right-click'], label: 'File/folder context menu (rename, delete)' },
       { keys: ['Drop'], label: 'Drop .md files anywhere to import' },
     ],
   },
@@ -248,7 +248,7 @@ function buildTree(files) {
   return root;
 }
 
-function TreeNode({ node, path, activeFile, onOpen, collapsed, toggle, depth = 0 }) {
+function TreeNode({ node, path, activeFile, onOpen, collapsed, toggle, onCtxMenu, depth = 0 }) {
   const folderKeys = Object.keys(node.folders).sort();
   return (
     <div>
@@ -261,6 +261,7 @@ function TreeNode({ node, path, activeFile, onOpen, collapsed, toggle, depth = 0
               className="tree-item"
               style={{ paddingLeft: 6 + depth * 14 }}
               onClick={() => toggle(fpath)}
+              onContextMenu={(e) => { e.preventDefault(); onCtxMenu && onCtxMenu(e, 'folder', fpath); }}
             >
               <span className={`chevron ${isCollapsed ? 'collapsed' : ''}`}>
                 <Icon name="chevron-down" size={12} />
@@ -276,6 +277,7 @@ function TreeNode({ node, path, activeFile, onOpen, collapsed, toggle, depth = 0
                 onOpen={onOpen}
                 collapsed={collapsed}
                 toggle={toggle}
+                onCtxMenu={onCtxMenu}
                 depth={depth + 1}
               />
             )}
@@ -288,12 +290,47 @@ function TreeNode({ node, path, activeFile, onOpen, collapsed, toggle, depth = 0
           className={`tree-item ${activeFile === f.path ? 'active' : ''}`}
           style={{ paddingLeft: 6 + depth * 14 + 18 }}
           onClick={() => onOpen(f.path)}
+          onContextMenu={(e) => { e.preventDefault(); onCtxMenu && onCtxMenu(e, 'file', f.path); }}
         >
           <span className="chevron hidden"></span>
           <span className="file-icon note"><Icon name="file" size={15} /></span>
           <span className="label">{f.name.replace(/\.md$/, '')}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---------- Context menu ---------- */
+function ContextMenu({ menu, onClose, onAction }) {
+  useEffect(() => {
+    const handler = () => onClose();
+    window.addEventListener('click', handler);
+    window.addEventListener('contextmenu', handler);
+    return () => {
+      window.removeEventListener('click', handler);
+      window.removeEventListener('contextmenu', handler);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="ctx-menu"
+      style={{ top: menu.y, left: menu.x }}
+      onClick={e => e.stopPropagation()}
+      onContextMenu={e => e.stopPropagation()}
+    >
+      {menu.type === 'file' && <>
+        <button className="ctx-item" onMouseDown={() => onAction('rename', menu.path)}>Rename</button>
+        <button className="ctx-item ctx-danger" onMouseDown={() => onAction('delete', menu.path)}>Delete</button>
+        <div className="ctx-sep" />
+        <button className="ctx-item" onMouseDown={() => { navigator.clipboard?.writeText(menu.path); onClose(); }}>Copy path</button>
+      </>}
+      {menu.type === 'folder' && <>
+        <button className="ctx-item" onMouseDown={() => onAction('newNote', menu.path)}>New note here</button>
+        <div className="ctx-sep" />
+        <button className="ctx-item" onMouseDown={() => onAction('renameFolder', menu.path)}>Rename folder</button>
+      </>}
     </div>
   );
 }
@@ -321,6 +358,10 @@ function getVaultApiUrl(pathname = '/api/vault') {
   return base ? `${base}${pathname}` : pathname;
 }
 
+function encodePath(filePath) {
+  return (filePath || '').split('/').map(encodeURIComponent).join('/');
+}
+
 function firstFilePath(fileMap, preferredPath) {
   const paths = Object.keys(fileMap).sort();
   if (preferredPath && fileMap[preferredPath]) return preferredPath;
@@ -344,9 +385,9 @@ function App() {
   const [openTabs, setOpenTabs] = useState([SAMPLE_DEFAULT_FILE]);
   const [activeTab, setActiveTab] = useState(SAMPLE_DEFAULT_FILE);
   const [collapsed, setCollapsed] = useState(new Set());
-  const [rightTab, setRightTab] = useState('backlinks'); // backlinks | graph | tags | outgoing
+  const [rightTab, setRightTab] = useState('backlinks');
   const [theme, setTheme] = useState(TWEAK_DEFAULTS.theme);
-  const [viewMode, setViewMode] = useState(TWEAK_DEFAULTS.viewMode); // split | source | preview
+  const [viewMode, setViewMode] = useState(TWEAK_DEFAULTS.viewMode);
   const [accentColor, setAccentColor] = useState(TWEAK_DEFAULTS.accentColor);
   const [sidebarWidth, setSidebarWidth] = useState(TWEAK_DEFAULTS.sidebarWidth);
   const [rightbarWidth, setRightbarWidth] = useState(TWEAK_DEFAULTS.rightbarWidth);
@@ -365,6 +406,9 @@ function App() {
   const [vaultRoot, setVaultRoot] = useState('');
   const [vaultApiBase] = useState(() => getVaultApiBaseUrl());
   const [storageReady, setStorageReady] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved'|'saving'|'unsaved'|'error'
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y, type: 'file'|'folder', path }
+  const [serverSearchResults, setServerSearchResults] = useState(null); // null | Array
 
   // Persistence
   useEffect(() => {
@@ -476,14 +520,12 @@ function App() {
 
   // Link click handler
   const handleInternalLink = useCallback((target) => {
-    // Try exact match, then match without .md
     const candidates = Object.keys(files);
     let match = candidates.find(p => p === target + '.md' || p === target);
     if (!match) match = candidates.find(p => p.endsWith('/' + target + '.md') || p.endsWith('/' + target));
     if (match) {
       openFile(match);
     } else {
-      // create placeholder
       const newPath = target + '.md';
       setFiles(f => ({ ...f, [newPath]: `# ${target}\n\n` }));
       openFile(newPath);
@@ -495,9 +537,83 @@ function App() {
     setSearch('#' + tag);
   }, []);
 
-  // Update file content
   const updateContent = (path, content) => {
     setFiles(f => ({ ...f, [path]: content }));
+  };
+
+  // Context menu actions
+  const handleCtxAction = async (action, targetPath) => {
+    setCtxMenu(null);
+
+    if (action === 'rename') {
+      const oldBasename = targetPath.split('/').pop().replace(/\.md$/, '');
+      const newName = prompt('Rename to:', oldBasename);
+      if (!newName || newName === oldBasename) return;
+      const dir = targetPath.includes('/') ? targetPath.split('/').slice(0, -1).join('/') + '/' : '';
+      const newPath = dir + newName + (newName.endsWith('.md') ? '' : '.md');
+      if (newPath === targetPath) return;
+
+      if (vaultSource === 'server') {
+        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPath }),
+        });
+        if (!r.ok) { alert('Rename failed'); return; }
+      }
+      setFiles(f => { const n = { ...f }; n[newPath] = n[targetPath]; delete n[targetPath]; return n; });
+      setOpenTabs(t => t.map(p => p === targetPath ? newPath : p));
+      setActiveTab(a => a === targetPath ? newPath : a);
+    }
+
+    if (action === 'delete') {
+      if (!confirm(`Move "${targetPath.split('/').pop()}" to .trash?`)) return;
+      if (vaultSource === 'server') {
+        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), { method: 'DELETE' });
+        if (!r.ok) { alert('Delete failed'); return; }
+      }
+      setFiles(f => { const n = { ...f }; delete n[targetPath]; return n; });
+      closeTab(targetPath);
+    }
+
+    if (action === 'newNote') {
+      const name = prompt('Note name:', '');
+      if (!name) return;
+      const filePath = (targetPath ? targetPath + '/' : '') + (name.endsWith('.md') ? name : name + '.md');
+      const content = `# ${name.replace(/\.md$/, '')}\n\n`;
+      if (vaultSource === 'server') {
+        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        });
+        if (!r.ok) { alert('Create failed'); return; }
+      }
+      setFiles(f => ({ ...f, [filePath]: content }));
+      openFile(filePath);
+    }
+
+    if (action === 'renameFolder') {
+      const oldName = targetPath.split('/').pop();
+      const newName = prompt('Rename folder to:', oldName);
+      if (!newName || newName === oldName) return;
+      const parentDir = targetPath.includes('/') ? targetPath.split('/').slice(0, -1).join('/') + '/' : '';
+      const newFolderPath = parentDir + newName;
+      const toRename = Object.keys(files).filter(p => p === targetPath || p.startsWith(targetPath + '/'));
+      for (const fp of toRename) {
+        const newFilePath = newFolderPath + fp.slice(targetPath.length);
+        if (vaultSource === 'server') {
+          await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(fp)), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ newPath: newFilePath }),
+          });
+        }
+        setFiles(f => { const n = { ...f }; n[newFilePath] = n[fp]; delete n[fp]; return n; });
+        setOpenTabs(t => t.map(p => p === fp ? newFilePath : p));
+        setActiveTab(a => a === fp ? newFilePath : a);
+      }
+    }
   };
 
   // Backlinks for active
@@ -597,18 +713,17 @@ function App() {
         setCmdQuery('');
         setCmdIndex(0);
       }
-      // Cmd/Ctrl + / → shortcuts sheet (works anywhere)
       if ((e.metaKey || e.ctrlKey) && e.key === '/') {
         e.preventDefault();
         setShortcutsOpen(s => !s);
       }
-      // ? → shortcuts sheet (only when not typing)
       if (e.key === '?' && !isTyping && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         setShortcutsOpen(s => !s);
       }
       if (e.key === 'Escape') {
         setCmdOpen(false);
+        setCtxMenu(null);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -663,7 +778,9 @@ function App() {
   // Upload via input
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
-  const [slashMenu, setSlashMenu] = useState(null); // { query, index, anchor, triggerPos }
+  const saveTimerRef = useRef(null);
+  const searchTimerRef = useRef(null);
+  const [slashMenu, setSlashMenu] = useState(null);
   const handleFileUpload = async (e) => {
     const list = [...(e.target.files || [])].filter(f => f.name.endsWith('.md'));
     const additions = {};
@@ -685,17 +802,49 @@ function App() {
 
   const activeContent = activeTab ? files[activeTab] || '' : '';
 
+  // Auto-save to server
+  useEffect(() => {
+    if (vaultSource !== 'server' || !activeTab || !storageReady) return;
+    setSaveStatus('unsaved');
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      setSaveStatus('saving');
+      try {
+        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(activeTab)), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: activeContent }),
+        });
+        setSaveStatus(r.ok ? 'saved' : 'error');
+      } catch {
+        setSaveStatus('error');
+      }
+    }, 1500);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [activeContent, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Server-side search
+  useEffect(() => {
+    if (vaultSource !== 'server' || !search.trim()) { setServerSearchResults(null); return; }
+    clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const r = await fetch(getVaultApiUrl('/api/vault/search?q=' + encodeURIComponent(search)));
+        if (r.ok) setServerSearchResults((await r.json()).results || []);
+      } catch {}
+    }, 300);
+    return () => clearTimeout(searchTimerRef.current);
+  }, [search, vaultSource]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ----- Snippets / slash menu -----
   const pickSlashSnippet = useCallback((snip) => {
     const ta = textareaRef.current;
     if (!ta || !slashMenu) { setSlashMenu(null); return; }
-    // Remove the '/query' prefix first
     const v = ta.value;
     const end = ta.selectionStart;
     const start = slashMenu.triggerPos;
     ta.setSelectionRange(start, end);
     document.execCommand && document.execCommand('delete');
-    // Now apply
     window.applySnippet(ta, snip);
     setSlashMenu(null);
   }, [slashMenu]);
@@ -703,16 +852,13 @@ function App() {
   const handleSlashTyping = useCallback((ta) => {
     const v = ta.value;
     const p = ta.selectionStart;
-    // Find last '/' on current line
     let i = p - 1;
     while (i >= 0 && v[i] !== '\n' && v[i] !== '/') i--;
     if (i >= 0 && v[i] === '/') {
       const before = i === 0 ? '' : v[i - 1];
-      // trigger only if / is at line start or after space
       if (i === 0 || before === '\n' || before === ' ') {
         const query = v.slice(i + 1, p);
         if (/^[a-zA-Z0-9]*$/.test(query)) {
-          // compute anchor pixel position
           const rect = ta.getBoundingClientRect();
           const host = ta.parentElement.getBoundingClientRect();
           setSlashMenu({
@@ -741,7 +887,6 @@ function App() {
 
   const handleEditorKey = useCallback((e) => {
     const ta = e.target;
-    // Slash menu navigation
     if (slashMenu) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -767,7 +912,6 @@ function App() {
         return;
       }
     }
-    // Shortcuts
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       const map = { b: 'bold', i: 'italic', k: 'link' };
@@ -779,6 +923,43 @@ function App() {
       }
     }
   }, [slashMenu, filteredSnippets, pickSlashSnippet]);
+
+  // Image paste in editor — upload to server, insert markdown
+  const handleEditorPaste = useCallback(async (e) => {
+    if (vaultSource !== 'server' || !activeTab) return;
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find(it => it.type.startsWith('image/'));
+    if (!imageItem) return;
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const r = await fetch(getVaultApiUrl('/api/vault/attachments'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: file.name || `image-${Date.now()}.png`, data: reader.result }),
+        });
+        if (!r.ok) return;
+        const data = await r.json();
+        const markdown = `![${data.filename}](${data.path})`;
+        const ta = textareaRef.current;
+        if (ta) {
+          const start = ta.selectionStart;
+          const end = ta.selectionEnd;
+          const current = files[activeTab] || '';
+          updateContent(activeTab, current.slice(0, start) + markdown + current.slice(end));
+          requestAnimationFrame(() => {
+            ta.selectionStart = ta.selectionEnd = start + markdown.length;
+          });
+        }
+      } catch (err) {
+        console.error('Attachment upload failed:', err);
+      }
+    };
+    reader.readAsDataURL(file);
+  }, [vaultSource, activeTab, files]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activePreviewHtml = useMemo(() => {
     if (!activeTab) return '';
@@ -808,6 +989,14 @@ function App() {
     const words = text.trim().split(/\s+/).filter(Boolean).length;
     return { words, chars: activeContent.length };
   }, [activeContent]);
+
+  // Save status label
+  const saveStatusLabel = vaultSource === 'server'
+    ? saveStatus === 'saving' ? 'saving…'
+    : saveStatus === 'error' ? 'save error'
+    : saveStatus === 'unsaved' ? 'unsaved'
+    : 'saved'
+    : null;
 
   return (
     <div
@@ -912,12 +1101,21 @@ function App() {
             <button className="icon-btn" onClick={() => fileInputRef.current?.click()} title="Upload">
               <Icon name="upload" size={13} />
             </button>
-            <button className="icon-btn" title="New note" onClick={() => {
+            <button className="icon-btn" title="New note" onClick={async () => {
               const name = prompt('Note name:');
               if (!name) return;
-              const path = name.endsWith('.md') ? name : name + '.md';
-              setFiles(f => ({ ...f, [path]: `# ${name.replace(/\.md$/, '')}\n\n` }));
-              openFile(path);
+              const filePath = name.endsWith('.md') ? name : name + '.md';
+              const content = `# ${name.replace(/\.md$/, '')}\n\n`;
+              if (vaultSource === 'server') {
+                const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content }),
+                });
+                if (!r.ok) { alert('Create failed'); return; }
+              }
+              setFiles(f => ({ ...f, [filePath]: content }));
+              openFile(filePath);
             }}>
               <Icon name="plus" size={13} />
             </button>
@@ -931,18 +1129,41 @@ function App() {
           />
         </div>
         <div className="file-tree">
-          <TreeNode
-            node={tree}
-            path=""
-            activeFile={activeTab}
-            onOpen={openFile}
-            collapsed={collapsed}
-            toggle={toggleFolder}
-          />
-          {Object.keys(filteredFiles).length === 0 && (
-            <div style={{padding: 20, textAlign: 'center', color: 'var(--text-faint)', fontSize: 12}}>
-              No files match "{search}"
+          {serverSearchResults !== null ? (
+            /* Server search results */
+            <div className="search-results">
+              {serverSearchResults.length === 0 && (
+                <div style={{padding: 20, textAlign: 'center', color: 'var(--text-faint)', fontSize: 12}}>
+                  No results for "{search}"
+                </div>
+              )}
+              {serverSearchResults.map(r => (
+                <div key={r.path} className="sr-item" onClick={() => openFile(r.path)}>
+                  <div className="sr-path">{r.path.replace(/\.md$/, '')}</div>
+                  {r.contexts.map((ctx, i) => (
+                    <div key={i} className="sr-ctx">{ctx.line}</div>
+                  ))}
+                </div>
+              ))}
             </div>
+          ) : (
+            /* Normal file tree */
+            <>
+              <TreeNode
+                node={tree}
+                path=""
+                activeFile={activeTab}
+                onOpen={openFile}
+                collapsed={collapsed}
+                toggle={toggleFolder}
+                onCtxMenu={(e, type, path) => setCtxMenu({ x: e.clientX, y: e.clientY, type, path })}
+              />
+              {Object.keys(filteredFiles).length === 0 && (
+                <div style={{padding: 20, textAlign: 'center', color: 'var(--text-faint)', fontSize: 12}}>
+                  No files match "{search}"
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -1046,6 +1267,7 @@ function App() {
                       handleSlashTyping(e.target);
                     }}
                     onKeyDown={handleEditorKey}
+                    onPaste={handleEditorPaste}
                     onBlur={() => setTimeout(() => setSlashMenu(null), 150)}
                     onScroll={() => setSlashMenu(m => m ? null : m)}
                     spellCheck={false}
@@ -1165,6 +1387,10 @@ function App() {
         <div className="sb-item" title={vaultApiBase || vaultRoot || 'Sample vault'}>
           {vaultSource === 'server' ? 'live vault' : vaultSource === 'local' ? 'local session' : 'sample vault'}
         </div>
+        {saveStatusLabel && <>
+          <div className="sb-item">·</div>
+          <div className={`sb-item sb-save-status sb-save-${saveStatus}`}>{saveStatusLabel}</div>
+        </>}
         <div className="sb-spacer"></div>
         <button className="sb-btn" onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts">
           <Icon name="keyboard" size={11} />
@@ -1280,6 +1506,15 @@ function App() {
       {/* Drop overlay */}
       {dragOver && (
         <div className="drop-overlay">Drop .md files to import</div>
+      )}
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <ContextMenu
+          menu={ctxMenu}
+          onClose={() => setCtxMenu(null)}
+          onAction={handleCtxAction}
+        />
       )}
     </div>
   );

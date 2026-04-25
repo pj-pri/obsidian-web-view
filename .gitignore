@@ -3,8 +3,6 @@ node_modules/
 
 # Environment & secrets
 .env
-.env.*
-!.env.example
 
 # Logs & caches
 npm-debug.log*
@@ -28,3 +26,5 @@ Desktop.ini
 .codex/
 .omx
 .omx/
+.omc
+.omc/
