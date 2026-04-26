@@ -1047,3 +1047,87 @@ html, body {
 .sb-save-saving { color: var(--text-accent); }
 .sb-save-unsaved { color: var(--text-muted); }
 .sb-save-error { color: #e65046; font-weight: 600; }
+
+/* ============ Frontmatter block ============ */
+.frontmatter-block {
+  background: var(--bg-secondary);
+  border: 1px solid var(--bg-modifier-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 1.4em;
+  font-size: 13px;
+}
+.fm-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--bg-modifier-border);
+}
+.fm-row:last-child { border-bottom: none; }
+.fm-key {
+  color: var(--text-muted);
+  font-weight: 500;
+  min-width: 80px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.fm-val { color: var(--text-normal); flex: 1; }
+
+/* ============ Tables ============ */
+.md-content .table-wrap { overflow-x: auto; margin: 1em 0; }
+.md-content table { border-collapse: collapse; min-width: 100%; font-size: 0.93em; }
+.md-content th, .md-content td {
+  padding: 7px 12px;
+  border: 1px solid var(--bg-modifier-border);
+  text-align: left;
+  vertical-align: top;
+}
+.md-content th { background: var(--bg-secondary); font-weight: 600; color: var(--text-normal); }
+.md-content tr:nth-child(even) td { background: var(--bg-secondary-alt); }
+
+/* ============ Inline del / mark ============ */
+.md-content del { color: var(--text-muted); opacity: 0.75; }
+.md-content mark {
+  background: rgba(255, 210, 50, 0.28);
+  color: var(--text-normal);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+:root[data-theme="light"] .md-content mark { background: rgba(240, 180, 0, 0.3); }
+
+/* ============ Task item checkboxes ============ */
+.md-content li.task-item {
+  list-style: none;
+  margin-left: -1.2em;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.md-content li.task-item input[type="checkbox"] {
+  margin-top: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: var(--interactive-accent);
+}
+
+/* ============ TOC in right panel ============ */
+.toc-list { padding: 4px 0; }
+.toc-item {
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.1s;
+}
+.toc-item:hover { background: var(--bg-modifier-hover); color: var(--text-normal); }
+.toc-h1 { font-weight: 600; color: var(--text-normal); }
+.toc-h2 { padding-left: 14px; }
+.toc-h3 { padding-left: 28px; font-size: 12px; }
+.toc-h4 { padding-left: 42px; font-size: 12px; }
+.toc-h5 { padding-left: 56px; font-size: 11px; }
+.toc-h6 { padding-left: 70px; font-size: 11px; }

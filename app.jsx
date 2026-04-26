@@ -966,12 +966,30 @@ function App() {
     return window.parseMarkdown(activeContent, { vaultFiles: Object.keys(files) });
   }, [activeContent, files, activeTab]);
 
-  // Click handlers for links/tags in preview
+  const toc = useMemo(() => {
+    if (!activeContent || !window.extractToc) return [];
+    return window.extractToc(activeContent);
+  }, [activeContent]);
+
+  // Click handlers for links/tags/checkboxes in preview
   const previewRef = useRef(null);
   useEffect(() => {
     const el = previewRef.current;
     if (!el) return;
     const onClick = (e) => {
+      const checkbox = e.target.closest('input[type="checkbox"]');
+      if (checkbox && checkbox.dataset.taskLine !== undefined) {
+        e.preventDefault();
+        const rawLine = checkbox.dataset.taskLine;
+        const wasChecked = /^\s*-\s+\[[xX]\]/.test(rawLine);
+        const newLine = wasChecked
+          ? rawLine.replace(/^(\s*-\s+)\[[xX]\]/, '$1[ ]')
+          : rawLine.replace(/^(\s*-\s+)\[ \]/, '$1[x]');
+        const srcLines = activeContent.split('\n');
+        const idx = srcLines.findIndex(l => l === rawLine);
+        if (idx !== -1) { srcLines[idx] = newLine; updateContent(activeTab, srcLines.join('\n')); }
+        return;
+      }
       const a = e.target.closest('a');
       if (!a) return;
       e.preventDefault();
@@ -980,7 +998,22 @@ function App() {
     };
     el.addEventListener('click', onClick);
     return () => el.removeEventListener('click', onClick);
-  }, [activePreviewHtml, handleInternalLink, handleTagClick]);
+  }, [activePreviewHtml, handleInternalLink, handleTagClick, activeContent, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Syntax highlighting via highlight.js
+  useEffect(() => {
+    if (!window.hljs || !previewRef.current) return;
+    previewRef.current.querySelectorAll('pre code[class]').forEach(b => window.hljs.highlightElement(b));
+  }, [activePreviewHtml]);
+
+  // Swap hljs theme stylesheet when app theme changes
+  useEffect(() => {
+    const link = document.getElementById('hljs-theme');
+    if (!link) return;
+    link.href = theme === 'dark'
+      ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css'
+      : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+  }, [theme]);
 
   // Word/char count
   const stats = useMemo(() => {
@@ -1299,6 +1332,7 @@ function App() {
         <div className="rightbar-tabs">
           <button className={`rightbar-tab ${rightTab === 'backlinks' ? 'active' : ''}`} onClick={() => setRightTab('backlinks')}>Backlinks</button>
           <button className={`rightbar-tab ${rightTab === 'outgoing' ? 'active' : ''}`} onClick={() => setRightTab('outgoing')}>Outgoing</button>
+          <button className={`rightbar-tab ${rightTab === 'toc' ? 'active' : ''}`} onClick={() => setRightTab('toc')}>TOC</button>
           <button className={`rightbar-tab ${rightTab === 'graph' ? 'active' : ''}`} onClick={() => setRightTab('graph')}>Graph</button>
           <button className={`rightbar-tab ${rightTab === 'tags' ? 'active' : ''}`} onClick={() => setRightTab('tags')}>Tags</button>
         </div>
@@ -1344,6 +1378,28 @@ function App() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          {rightTab === 'toc' && (
+            <div>
+              <div className="rb-section-header">
+                Table of contents <span className="count">{toc.length}</span>
+              </div>
+              {toc.length === 0 && <div className="backlink-empty">No headings found.</div>}
+              <div className="toc-list">
+                {toc.map((item, i) => (
+                  <div
+                    key={i}
+                    className={`toc-item toc-h${item.level}`}
+                    onClick={() => {
+                      const el = previewRef.current?.querySelector('#' + CSS.escape(item.id));
+                      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }}
+                  >
+                    {item.text}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {rightTab === 'graph' && (

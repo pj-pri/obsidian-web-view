@@ -2,7 +2,7 @@
 
 **버전**: 1.0  
 **작성일**: 2026-04-25  
-**상태**: 초안
+**상태**: Phase 1 완료
 
 ---
 
@@ -181,25 +181,33 @@ Node.js 서버 (server.js)
 ### Phase 1 — 실사용 가능한 CRUD (현재 목표)
 
 **백엔드**
-- [ ] 파일 목록 API (`GET /api/vault/files`)
-- [ ] 파일 단건 조회 API (`GET /api/vault/files/:path`)
-- [ ] 파일 생성 API (`POST /api/vault/files/:path`)
-- [ ] 파일 수정 API (`PUT /api/vault/files/:path`)
-- [ ] 파일 삭제 API (`DELETE /api/vault/files/:path`)
-- [ ] 파일 이동/이름 변경 API (`PATCH /api/vault/files/:path`)
-- [ ] 전체 텍스트 검색 API (`GET /api/vault/search`)
-- [ ] 첨부파일 업로드/서빙 API
+- [x] 파일 목록 API (`GET /api/vault/files`)
+- [x] 파일 단건 조회 API (`GET /api/vault/files/:path`)
+- [x] 파일 생성 API (`POST /api/vault/files/:path`)
+- [x] 파일 수정 API (`PUT /api/vault/files/:path`)
+- [x] 파일 삭제 API (`DELETE /api/vault/files/:path`)
+- [x] 파일 이동/이름 변경 API (`PATCH /api/vault/files/:path`)
+- [x] 전체 텍스트 검색 API (`GET /api/vault/search`)
+- [x] 첨부파일 업로드/서빙 API
 
 **프론트엔드**
-- [ ] 온디맨드 파일 로딩으로 전환
-- [ ] 자동 저장 (debounce + 저장 상태 인디케이터)
-- [ ] 파일/폴더 우클릭 컨텍스트 메뉴
-- [ ] 검색 API 연동
-- [ ] 이미지 붙여넣기·드래그 업로드
+- [x] 온디맨드 파일 로딩으로 전환
+- [x] 자동 저장 (debounce + 저장 상태 인디케이터)
+- [x] 파일/폴더 우클릭 컨텍스트 메뉴
+- [x] 검색 API 연동
+- [x] 이미지 붙여넣기·드래그 업로드
+
+**뷰어 완성도**
+- [x] Frontmatter YAML 파싱 및 표시
+- [x] 목차(TOC) 자동 생성 (우측 패널)
+- [x] 코드 블록 언어별 구문 강조 (highlight.js)
+- [x] 테이블 렌더링 개선
+- [x] 체크박스 클릭 시 원본 마크다운 토글
+- [x] 취소선(`~~`), 하이라이트(`==`) 인라인 파싱
 
 **인프라**
-- [ ] `Dockerfile` 작성 (단일 컨테이너)
-- [ ] 환경변수 목록 문서화 (`.env.example`)
+- [x] `Dockerfile` 작성 (단일 컨테이너)
+- [x] 환경변수 목록 문서화 (`.env.example`)
 
 ### Phase 2 — 인증 & 보안
 
