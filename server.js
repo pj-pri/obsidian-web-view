@@ -140,6 +140,17 @@ function sendRateLimited(res, retrySeconds, message = 'Too many requests') {
   res.end(JSON.stringify({ error: message }));
 }
 
+function logSecurityEvent(level, event, details = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    event,
+    ...details,
+  };
+  const line = `[security] ${JSON.stringify(payload)}`;
+  if (level === 'warn') console.warn(line);
+  else console.log(line);
+}
+
 function sendAuthChallenge(res) {
   res.writeHead(401, {
     'Content-Type': 'text/plain; charset=utf-8',
@@ -191,6 +202,13 @@ const server = http.createServer((req, res) => {
   const requestRate = checkRateLimit(requestBuckets, clientIp, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MS, now);
   setRateLimitHeaders(res, RATE_LIMIT_MAX_REQUESTS, requestRate);
   if (!requestRate.allowed) {
+    logSecurityEvent('warn', 'rate_limit', {
+      scope: 'request',
+      ip: clientIp,
+      method: req.method,
+      path: pathname,
+      retryAfterSec: Math.ceil((requestRate.resetAt - now) / 1000),
+    });
     sendRateLimited(res, Math.ceil((requestRate.resetAt - now) / 1000));
     return;
   }
@@ -199,9 +217,22 @@ const server = http.createServer((req, res) => {
     const authRate = checkRateLimit(authFailureBuckets, clientIp, AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW_MS, now);
     setRateLimitHeaders(res, AUTH_RATE_LIMIT_MAX_FAILURES, authRate);
     if (!authRate.allowed) {
+      logSecurityEvent('warn', 'rate_limit', {
+        scope: 'auth',
+        ip: clientIp,
+        method: req.method,
+        path: pathname,
+        retryAfterSec: Math.ceil((authRate.resetAt - now) / 1000),
+      });
       sendRateLimited(res, Math.ceil((authRate.resetAt - now) / 1000), 'Too many authentication attempts');
       return;
     }
+    logSecurityEvent('warn', 'auth_failed', {
+      ip: clientIp,
+      method: req.method,
+      path: pathname,
+      remainingFailures: authRate.remaining,
+    });
     sendAuthChallenge(res);
     return;
   }
