@@ -58,6 +58,15 @@ AUTH_RATE_LIMIT_MAX_FAILURES=10
 SECURITY_HEADERS_ENABLED=true
 ```
 
+### 보안 로그
+
+보안 이벤트는 앱이 파일에 직접 쓰지 않고 **stdout/stderr**로 출력합니다.
+
+- `auth_failed`: 인증 실패
+- `rate_limit`: 요청 제한 초과
+
+PM2로 실행하면 이 로그는 PM2 로그 파일로 수집되고, 터미널에서 실행하면 현재 콘솔에 바로 표시됩니다.
+
 ## Docker로 실행
 
 ```bash

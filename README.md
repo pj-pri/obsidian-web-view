@@ -197,6 +197,25 @@ docker run -d \
 - 현재 프로젝트의 인증은 **단일 사용자 보호용 1차 방어선**입니다.
 - 기본 rate limiting은 **메모리 기반 단일 프로세스**입니다. 여러 인스턴스를 띄우면 프록시/공유 저장소 기반 제한이 필요합니다.
 
+### 보안 이벤트 로그
+
+서버는 별도 로그 파일을 직접 쓰지 않고 **stdout/stderr**로 보안 이벤트를 출력합니다.
+
+- `auth_failed` — Basic Auth 인증 실패
+- `rate_limit` — 일반 요청 제한 또는 인증 실패 제한 초과
+
+예시:
+
+```text
+[security] {"ts":"2026-04-29T14:44:17.183Z","event":"auth_failed","ip":"127.0.0.1","method":"GET","path":"/api/vault/files","remainingFailures":1}
+```
+
+```text
+[security] {"ts":"2026-04-29T14:44:17.258Z","event":"rate_limit","scope":"auth","ip":"127.0.0.1","method":"GET","path":"/api/vault/files","retryAfterSec":60}
+```
+
+PM2, Docker, systemd 같은 런타임에서는 이 stdout/stderr 출력을 그대로 수집하면 됩니다.
+
 ---
 
 ## 노트 규칙
