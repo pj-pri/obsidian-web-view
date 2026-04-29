@@ -211,6 +211,7 @@ Node.js 서버 (server.js)
 
 ### Phase 2 — 인증 & 보안
 
+- [x] 세션 로그인 / 로그아웃 + 쿠키 인증
 - [x] HTTP Basic Auth 미들웨어
 - [ ] 토큰 기반 인증 미들웨어
 - [ ] HTTPS 설정 가이드 (reverse proxy: nginx/caddy)

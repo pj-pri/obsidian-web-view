@@ -335,6 +335,55 @@ function ContextMenu({ menu, onClose, onAction }) {
   );
 }
 
+function LoginScreen({ busy, error, onSubmit }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  return (
+    <div style={{minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)', color: 'var(--text-normal)', padding: 24}}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit({ username, password });
+        }}
+        style={{width: '100%', maxWidth: 360, background: 'var(--bg-secondary)', border: '1px solid var(--bg-modifier-border)', borderRadius: 12, padding: 24, boxShadow: '0 12px 40px rgba(0,0,0,0.18)'}}
+      >
+        <div style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18}}>
+          <div style={{width: 36, height: 36, display: 'grid', placeItems: 'center', borderRadius: 10, background: 'var(--interactive-accent)', color: '#fff'}}>
+            <Icon name="file" size={18} />
+          </div>
+          <div>
+            <div style={{fontSize: 18, fontWeight: 700}}>Sign in</div>
+            <div style={{fontSize: 12, color: 'var(--text-faint)'}}>Log in to open your vault</div>
+          </div>
+        </div>
+        <label style={{display: 'block', fontSize: 12, color: 'var(--text-faint)', marginBottom: 6}}>Username</label>
+        <input
+          autoFocus
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          style={{width: '100%', boxSizing: 'border-box', marginBottom: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--bg-modifier-border)', background: 'var(--bg-primary)', color: 'var(--text-normal)'}}
+        />
+        <label style={{display: 'block', fontSize: 12, color: 'var(--text-faint)', marginBottom: 6}}>Password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={{width: '100%', boxSizing: 'border-box', marginBottom: 14, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--bg-modifier-border)', background: 'var(--bg-primary)', color: 'var(--text-normal)'}}
+        />
+        {error && <div style={{marginBottom: 12, color: 'var(--text-error)', fontSize: 12}}>{error}</div>}
+        <button
+          type="submit"
+          disabled={busy}
+          style={{width: '100%', border: 'none', borderRadius: 8, padding: '10px 12px', background: 'var(--interactive-accent)', color: '#fff', fontWeight: 600, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1}}
+        >
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /* ---------- Main App ---------- */
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark",
@@ -419,6 +468,9 @@ function App() {
   const [ctxMenu, setCtxMenu] = useState(null); // { x, y, type: 'file'|'folder', path }
   const [serverSearchResults, setServerSearchResults] = useState(null); // null | Array
   const [loadingFiles, setLoadingFiles] = useState(() => new Set());
+  const [authState, setAuthState] = useState({ ready: false, mode: 'none', authenticated: true, username: null });
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState('');
   const savedContentsRef = useRef({});
   const pendingSearchJumpRef = useRef(null);
 
@@ -450,8 +502,7 @@ function App() {
       setVaultRoot(nextRoot);
     };
 
-    const loadInitialState = async () => {
-      const saved = readSavedState();
+    const loadVaultState = async (saved) => {
       try {
         const response = await fetch(getVaultApiUrl('/api/vault/files'), { cache: 'no-store' });
         if (!cancelled && response.ok) {
@@ -462,11 +513,40 @@ function App() {
           savedContentsRef.current = {};
           applyVaultState({}, 'server', defaultFile, saved, '', nextIndex);
           setStorageReady(true);
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    };
+
+    const loadInitialState = async () => {
+      const saved = readSavedState();
+      try {
+        const authResponse = await fetch(getVaultApiUrl('/api/auth/session'), { cache: 'no-store' });
+        if (!cancelled && authResponse.ok) {
+          const authData = await authResponse.json();
+          const nextAuthState = {
+            ready: true,
+            mode: authData.mode || 'none',
+            authenticated: !!authData.authenticated,
+            username: authData.username || null,
+          };
+          setAuthState(nextAuthState);
+          if (nextAuthState.mode === 'session' && !nextAuthState.authenticated) {
+            setStorageReady(true);
+            return;
+          }
+          if (await loadVaultState(saved)) {
+            return;
+          }
+        } else if (!cancelled && await loadVaultState(saved)) {
           return;
         }
       } catch (e) {}
 
       if (cancelled) return;
+      setAuthState({ ready: true, mode: 'none', authenticated: true, username: null });
+      if (await loadVaultState(saved)) return;
       if (saved?.files) {
         applyVaultState(saved.files, 'local', saved.activeTab, saved);
       } else {
@@ -496,6 +576,47 @@ function App() {
 
   const filePresenceMap = useMemo(() => buildPresenceMap(allPaths), [allPaths]);
 
+  const apiFetch = useCallback(async (url, options) => {
+    const response = await fetch(url, options);
+    if (response.status === 401 && authState.mode === 'session') {
+      setAuthState((curr) => ({ ...curr, authenticated: false }));
+      setLoginError('Your session expired. Please sign in again.');
+    }
+    return response;
+  }, [authState.mode]);
+
+  const handleLogin = useCallback(async ({ username, password }) => {
+    setLoginBusy(true);
+    setLoginError('');
+    try {
+      const response = await fetch(getVaultApiUrl('/api/auth/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setLoginError(data.error || 'Login failed');
+        return;
+      }
+      setAuthState({ ready: true, mode: 'session', authenticated: true, username: data.username || username });
+      location.reload();
+    } catch {
+      setLoginError('Login failed');
+    } finally {
+      setLoginBusy(false);
+    }
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch(getVaultApiUrl('/api/auth/logout'), { method: 'POST' });
+    } catch {}
+    setAuthState((curr) => ({ ...curr, authenticated: false, username: null }));
+    setLoginError('');
+    location.reload();
+  }, []);
+
   const fetchFileContent = useCallback(async (filePath, { force = false } = {}) => {
     if (!filePath) return null;
     if (!force && Object.prototype.hasOwnProperty.call(files, filePath)) return files[filePath];
@@ -505,7 +626,7 @@ function App() {
       return next;
     });
     try {
-      const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), { cache: 'no-store' });
+      const response = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), { cache: 'no-store' });
       if (!response.ok) throw new Error('Failed to load file');
       const data = await response.json();
       setFiles(curr => ({ ...curr, [filePath]: data.content || '' }));
@@ -524,7 +645,7 @@ function App() {
     const uniquePaths = [...new Set((paths || []).filter(path => path && Object.prototype.hasOwnProperty.call(files, path)))];
     if (!uniquePaths.length) return;
     const refreshed = await Promise.all(uniquePaths.map(async (path) => {
-      const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(path)), { cache: 'no-store' });
+      const response = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(path)), { cache: 'no-store' });
       if (!response.ok) return null;
       const data = await response.json();
       return { path, content: data.content || '' };
@@ -637,7 +758,7 @@ function App() {
       if (newPath === targetPath) return;
 
       if (vaultSource === 'server') {
-        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), {
+        const r = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ newPath }),
@@ -664,7 +785,7 @@ function App() {
     if (action === 'delete') {
       if (!confirm(`Move "${targetPath.split('/').pop()}" to .trash?`)) return;
       if (vaultSource === 'server') {
-        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), { method: 'DELETE' });
+        const r = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), { method: 'DELETE' });
         if (!r.ok) { alert('Delete failed'); return; }
         setServerFileIndex(index => index.filter(file => file.path !== targetPath));
         delete savedContentsRef.current[targetPath];
@@ -679,7 +800,7 @@ function App() {
       const filePath = (targetPath ? targetPath + '/' : '') + (name.endsWith('.md') ? name : name + '.md');
       const content = `# ${name.replace(/\.md$/, '')}\n\n`;
       if (vaultSource === 'server') {
-        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), {
+        const r = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content }),
@@ -702,7 +823,7 @@ function App() {
       for (const fp of toRename) {
         const newFilePath = newFolderPath + fp.slice(targetPath.length);
         if (vaultSource === 'server') {
-          const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(fp)), {
+          const response = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(fp)), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ newPath: newFilePath }),
@@ -877,7 +998,7 @@ function App() {
       const reader = new FileReader();
       reader.onload = async () => {
         try {
-          const response = await fetch(getVaultApiUrl('/api/vault/attachments'), {
+          const response = await apiFetch(getVaultApiUrl('/api/vault/attachments'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename: file.name || `image-${Date.now()}.png`, data: reader.result }),
@@ -921,7 +1042,7 @@ function App() {
       for (const file of dropped) {
         const text = await file.text();
         if (vaultSource === 'server') {
-          const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(file.name)), {
+          const response = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(file.name)), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: text }),
@@ -958,7 +1079,7 @@ function App() {
     for (const f of list) {
       const text = await f.text();
       if (vaultSource === 'server') {
-        const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(f.name)), {
+        const response = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(f.name)), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: text }),
@@ -997,7 +1118,7 @@ function App() {
     saveTimerRef.current = setTimeout(async () => {
       setSaveStatus('saving');
       try {
-        const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(activeTab)), {
+        const r = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(activeTab)), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: activeContent }),
@@ -1021,7 +1142,7 @@ function App() {
     clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(async () => {
       try {
-        const r = await fetch(getVaultApiUrl('/api/vault/search?q=' + encodeURIComponent(search)));
+        const r = await apiFetch(getVaultApiUrl('/api/vault/search?q=' + encodeURIComponent(search)));
         if (r.ok) setServerSearchResults((await r.json()).results || []);
       } catch {}
     }, 300);
@@ -1220,6 +1341,18 @@ function App() {
     : 'saved'
     : null;
 
+  if (!authState.ready) {
+    return (
+      <div style={{minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg-primary)', color: 'var(--text-normal)'}}>
+        Checking session…
+      </div>
+    );
+  }
+
+  if (authState.mode === 'session' && !authState.authenticated) {
+    return <LoginScreen busy={loginBusy} error={loginError} onSubmit={handleLogin} />;
+  }
+
   return (
     <div
       className={appClasses}
@@ -1329,7 +1462,7 @@ function App() {
               const filePath = name.endsWith('.md') ? name : name + '.md';
               const content = `# ${name.replace(/\.md$/, '')}\n\n`;
               if (vaultSource === 'server') {
-                const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), {
+                const r = await apiFetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ content }),
@@ -1644,7 +1777,17 @@ function App() {
           <div className="sb-item">·</div>
           <div className={`sb-item sb-save-status sb-save-${saveStatus}`}>{saveStatusLabel}</div>
         </>}
+        {authState.mode === 'session' && authState.username && <>
+          <div className="sb-item">·</div>
+          <div className="sb-item">{authState.username}</div>
+        </>}
         <div className="sb-spacer"></div>
+        {authState.mode === 'session' && (
+          <button className="sb-btn" onClick={handleLogout}>
+            <Icon name="x" size={11} />
+            <span>Logout</span>
+          </button>
+        )}
         <button className="sb-btn" onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts">
           <Icon name="keyboard" size={11} />
           <span>Shortcuts</span>

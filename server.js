@@ -20,12 +20,18 @@ try {
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { URL } = require('url');
 const { getVaultRoot, handleVaultApi } = require('./vault-api/index.js');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 5173;
 const DEFAULT_FILE = 'Obsidian Web Vault.html';
+const APP_LOGIN_USER = process.env.APP_LOGIN_USER || '';
+const APP_LOGIN_PASSWORD = process.env.APP_LOGIN_PASSWORD || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || 'owv_session';
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS) || 7 * 24 * 60 * 60_000;
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || '';
 const BASIC_AUTH_PASSWORD = process.env.BASIC_AUTH_PASSWORD || '';
 const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Obsidian Web Vault';
@@ -37,6 +43,7 @@ const SECURITY_HEADERS_ENABLED = process.env.SECURITY_HEADERS_ENABLED !== 'false
 
 const requestBuckets = new Map();
 const authFailureBuckets = new Map();
+const sessions = new Map();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -79,6 +86,14 @@ function isAuthEnabled() {
   return !!(BASIC_AUTH_USER && BASIC_AUTH_PASSWORD);
 }
 
+function isSessionAuthEnabled() {
+  return !!(APP_LOGIN_USER && APP_LOGIN_PASSWORD && SESSION_SECRET);
+}
+
+function isBasicAuthEnabled() {
+  return !isSessionAuthEnabled() && !!(BASIC_AUTH_USER && BASIC_AUTH_PASSWORD);
+}
+
 function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
   if (typeof forwarded === 'string' && forwarded.trim()) {
@@ -91,6 +106,100 @@ function pruneBucketStore(store, now) {
   for (const [key, bucket] of store.entries()) {
     if (!bucket || bucket.resetAt <= now) store.delete(key);
   }
+}
+
+function pruneSessions(now) {
+  for (const [sid, session] of sessions.entries()) {
+    if (!session || session.expiresAt <= now) sessions.delete(sid);
+  }
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  return header.split(';').reduce((acc, part) => {
+    const idx = part.indexOf('=');
+    if (idx === -1) return acc;
+    const key = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (key) acc[key] = decodeURIComponent(value);
+    return acc;
+  }, {});
+}
+
+function signSessionId(sessionId) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(sessionId).digest('hex');
+}
+
+function encodeSessionToken(sessionId) {
+  return `${sessionId}.${signSessionId(sessionId)}`;
+}
+
+function decodeSessionToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const dot = token.indexOf('.');
+  if (dot === -1) return null;
+  const sessionId = token.slice(0, dot);
+  const signature = token.slice(dot + 1);
+  if (!sessionId || !signature) return null;
+  const expected = signSessionId(sessionId);
+  const signatureBuf = Buffer.from(signature);
+  const expectedBuf = Buffer.from(expected);
+  if (signatureBuf.length !== expectedBuf.length) return null;
+  if (!crypto.timingSafeEqual(signatureBuf, expectedBuf)) return null;
+  return sessionId;
+}
+
+function createSession(username, now = Date.now()) {
+  const sessionId = crypto.randomBytes(24).toString('hex');
+  const expiresAt = now + SESSION_TTL_MS;
+  sessions.set(sessionId, { username, expiresAt });
+  return { token: encodeSessionToken(sessionId), expiresAt };
+}
+
+function getSession(req, now = Date.now()) {
+  if (!isSessionAuthEnabled()) return null;
+  const cookies = parseCookies(req);
+  const token = cookies[SESSION_COOKIE_NAME];
+  const sessionId = decodeSessionToken(token);
+  if (!sessionId) return null;
+  const session = sessions.get(sessionId);
+  if (!session || session.expiresAt <= now) {
+    sessions.delete(sessionId);
+    return null;
+  }
+  session.expiresAt = now + SESSION_TTL_MS;
+  return { sessionId, ...session };
+}
+
+function setSessionCookie(res, token, expiresAt) {
+  const cookie = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${Math.max(1, Math.floor((expiresAt - Date.now()) / 1000))}`,
+  ];
+  res.setHeader('Set-Cookie', cookie.join('; '));
+}
+
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      if (!chunks.length) return resolve({});
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
 function checkRateLimit(store, key, limit, windowMs, now = Date.now()) {
@@ -140,6 +249,14 @@ function sendRateLimited(res, retrySeconds, message = 'Too many requests') {
   res.end(JSON.stringify({ error: message }));
 }
 
+function sendJson(res, status, payload) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-cache',
+  });
+  res.end(JSON.stringify(payload));
+}
+
 function logSecurityEvent(level, event, details = {}) {
   const payload = {
     ts: new Date().toISOString(),
@@ -160,8 +277,12 @@ function sendAuthChallenge(res) {
   res.end('Authentication required');
 }
 
-function isAuthorized(req) {
-  if (!isAuthEnabled() || req.method === 'OPTIONS') return true;
+function sendUnauthorizedJson(res) {
+  sendJson(res, 401, { error: 'Authentication required' });
+}
+
+function isAuthorizedByBasicAuth(req) {
+  if (!isBasicAuthEnabled() || req.method === 'OPTIONS') return true;
   const header = req.headers.authorization || '';
   const match = header.match(/^Basic\s+(.+)$/i);
   if (!match) return false;
@@ -180,6 +301,101 @@ function isAuthorized(req) {
   return user === BASIC_AUTH_USER && password === BASIC_AUTH_PASSWORD;
 }
 
+async function handleAuthApi(req, res, pathname, clientIp, now) {
+  if (!pathname.startsWith('/api/auth')) return false;
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    });
+    res.end();
+    return true;
+  }
+
+  if (pathname === '/api/auth/session' && req.method === 'GET') {
+    const session = getSession(req, now);
+    sendJson(res, 200, {
+      enabled: isSessionAuthEnabled(),
+      mode: isSessionAuthEnabled() ? 'session' : isBasicAuthEnabled() ? 'basic' : 'none',
+      authenticated: !!session || !isSessionAuthEnabled(),
+      username: session?.username || (isBasicAuthEnabled() ? BASIC_AUTH_USER : null),
+    });
+    return true;
+  }
+
+  if (!isSessionAuthEnabled()) {
+    sendJson(res, 404, { error: 'Session login is not enabled' });
+    return true;
+  }
+
+  if (pathname === '/api/auth/login' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: 'Invalid JSON' });
+      return true;
+    }
+
+    const username = String(body.username || '');
+    const password = String(body.password || '');
+    if (username !== APP_LOGIN_USER || password !== APP_LOGIN_PASSWORD) {
+      const authRate = checkRateLimit(authFailureBuckets, clientIp, AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW_MS, now);
+      setRateLimitHeaders(res, AUTH_RATE_LIMIT_MAX_FAILURES, authRate);
+      if (!authRate.allowed) {
+        logSecurityEvent('warn', 'rate_limit', {
+          scope: 'login',
+          ip: clientIp,
+          method: req.method,
+          path: pathname,
+          retryAfterSec: Math.ceil((authRate.resetAt - now) / 1000),
+        });
+        sendRateLimited(res, Math.ceil((authRate.resetAt - now) / 1000), 'Too many login attempts');
+        return true;
+      }
+      logSecurityEvent('warn', 'login_failed', {
+        ip: clientIp,
+        method: req.method,
+        path: pathname,
+        remainingFailures: authRate.remaining,
+      });
+      sendJson(res, 401, { error: 'Invalid credentials' });
+      return true;
+    }
+
+    authFailureBuckets.delete(clientIp);
+    const session = createSession(APP_LOGIN_USER, now);
+    setSessionCookie(res, session.token, session.expiresAt);
+    logSecurityEvent('info', 'login_success', {
+      ip: clientIp,
+      method: req.method,
+      path: pathname,
+      username: APP_LOGIN_USER,
+    });
+    sendJson(res, 200, { ok: true, username: APP_LOGIN_USER });
+    return true;
+  }
+
+  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+    const session = getSession(req, now);
+    if (session?.sessionId) sessions.delete(session.sessionId);
+    clearSessionCookie(res);
+    logSecurityEvent('info', 'logout', {
+      ip: clientIp,
+      method: req.method,
+      path: pathname,
+      username: session?.username || null,
+    });
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  sendJson(res, 405, { error: 'Method not allowed' });
+  return true;
+}
+
 const server = http.createServer((req, res) => {
   applySecurityHeaders(res);
 
@@ -193,9 +409,10 @@ const server = http.createServer((req, res) => {
   }
 
   const now = Date.now();
-  if (requestBuckets.size > 1000 || authFailureBuckets.size > 1000) {
+  if (requestBuckets.size > 1000 || authFailureBuckets.size > 1000 || sessions.size > 1000) {
     pruneBucketStore(requestBuckets, now);
     pruneBucketStore(authFailureBuckets, now);
+    pruneSessions(now);
   }
 
   const clientIp = getClientIp(req);
@@ -213,31 +430,49 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (!isAuthorized(req)) {
-    const authRate = checkRateLimit(authFailureBuckets, clientIp, AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW_MS, now);
-    setRateLimitHeaders(res, AUTH_RATE_LIMIT_MAX_FAILURES, authRate);
-    if (!authRate.allowed) {
-      logSecurityEvent('warn', 'rate_limit', {
-        scope: 'auth',
-        ip: clientIp,
-        method: req.method,
-        path: pathname,
-        retryAfterSec: Math.ceil((authRate.resetAt - now) / 1000),
-      });
-      sendRateLimited(res, Math.ceil((authRate.resetAt - now) / 1000), 'Too many authentication attempts');
-      return;
-    }
-    logSecurityEvent('warn', 'auth_failed', {
-      ip: clientIp,
-      method: req.method,
-      path: pathname,
-      remainingFailures: authRate.remaining,
+  if (pathname.startsWith('/api/auth')) {
+    Promise.resolve(handleAuthApi(req, res, pathname, clientIp, now)).catch((error) => {
+      console.error('[auth-api]', error);
+      if (!res.headersSent) sendJson(res, 500, { error: 'Internal error' });
     });
-    sendAuthChallenge(res);
     return;
   }
 
-  authFailureBuckets.delete(clientIp);
+  if (isBasicAuthEnabled()) {
+    if (!isAuthorizedByBasicAuth(req)) {
+      const authRate = checkRateLimit(authFailureBuckets, clientIp, AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW_MS, now);
+      setRateLimitHeaders(res, AUTH_RATE_LIMIT_MAX_FAILURES, authRate);
+      if (!authRate.allowed) {
+        logSecurityEvent('warn', 'rate_limit', {
+          scope: 'auth',
+          ip: clientIp,
+          method: req.method,
+          path: pathname,
+          retryAfterSec: Math.ceil((authRate.resetAt - now) / 1000),
+        });
+        sendRateLimited(res, Math.ceil((authRate.resetAt - now) / 1000), 'Too many authentication attempts');
+        return;
+      }
+      logSecurityEvent('warn', 'auth_failed', {
+        ip: clientIp,
+        method: req.method,
+        path: pathname,
+        remainingFailures: authRate.remaining,
+      });
+      sendAuthChallenge(res);
+      return;
+    }
+
+    authFailureBuckets.delete(clientIp);
+  }
+
+  if (isSessionAuthEnabled() && pathname.startsWith('/api/')) {
+    const session = getSession(req, now);
+    if (!session) {
+      sendUnauthorizedJson(res);
+      return;
+    }
+  }
 
   // API routes handle all HTTP methods (POST, PUT, DELETE, PATCH, OPTIONS, etc.)
   if (handleVaultApi(req, res, pathname)) return;
@@ -317,13 +552,20 @@ function listDir(res, dirPath) {
 server.listen(PORT, () => {
   console.log(`Static server at http://localhost:${PORT}/`);
   console.log(`Open: http://localhost:${PORT}/${encodeURIComponent(DEFAULT_FILE)}`);
-  if (isAuthEnabled()) {
+  if (isSessionAuthEnabled()) {
+    console.log(`Session login: enabled (${APP_LOGIN_USER})`);
+  } else if (APP_LOGIN_USER || APP_LOGIN_PASSWORD || SESSION_SECRET) {
+    console.warn('Session login: disabled because APP_LOGIN_USER, APP_LOGIN_PASSWORD, and SESSION_SECRET must all be set.');
+  }
+  if (isBasicAuthEnabled()) {
     console.log(`Basic Auth: enabled (${BASIC_AUTH_USER})`);
-  } else if (BASIC_AUTH_USER || BASIC_AUTH_PASSWORD) {
+  } else if (!isSessionAuthEnabled() && (BASIC_AUTH_USER || BASIC_AUTH_PASSWORD)) {
     console.warn('Basic Auth: disabled because BASIC_AUTH_USER and BASIC_AUTH_PASSWORD must both be set.');
+  } else if (isSessionAuthEnabled() && (BASIC_AUTH_USER || BASIC_AUTH_PASSWORD)) {
+    console.warn('Basic Auth: ignored because session login is enabled.');
   }
   console.log(`Rate limit: ${RATE_LIMIT_MAX_REQUESTS} requests / ${Math.round(RATE_LIMIT_WINDOW_MS / 1000)}s per IP`);
-  if (isAuthEnabled()) {
+  if (isSessionAuthEnabled() || isBasicAuthEnabled()) {
     console.log(`Auth failures: ${AUTH_RATE_LIMIT_MAX_FAILURES} attempts / ${Math.round(AUTH_RATE_LIMIT_WINDOW_MS / 1000)}s per IP`);
   }
   const vaultRoot = getVaultRoot();

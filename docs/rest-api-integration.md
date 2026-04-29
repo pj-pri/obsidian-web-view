@@ -175,7 +175,12 @@ GET /api/vault
 ## 보안
 
 - 경로 트래버설(`../`) 차단: 모든 경로는 vault 루트 내로 제한
+- 세션 로그인 API 제공:
+  - `POST /api/auth/login`
+  - `POST /api/auth/logout`
+  - `GET /api/auth/session`
 - Basic Auth를 켜려면 서버 환경변수 `BASIC_AUTH_USER`, `BASIC_AUTH_PASSWORD`를 함께 설정
+- 세션 로그인을 켜려면 `APP_LOGIN_USER`, `APP_LOGIN_PASSWORD`, `SESSION_SECRET`를 함께 설정
 - 기본 rate limiting 헤더(`RateLimit-*`)와 `429 Too Many Requests` 응답 지원
 - 기본 보안 헤더/CSP는 `SECURITY_HEADERS_ENABLED=true`일 때 활성화
 - 인증 실패와 제한 초과 이벤트는 서버 stdout/stderr에 구조화된 한 줄 로그로 출력
