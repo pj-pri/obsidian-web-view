@@ -30,9 +30,47 @@ cp .env.example .env
 ```
 OBSIDIAN_VAULT_DIR=/Users/yourname/Documents/MyVault
 PORT=5173
+BASIC_AUTH_USER=
+BASIC_AUTH_PASSWORD=
 ```
 
 이후 `node server.js`만 실행하면 자동으로 적용됩니다.
+
+### 3. 인증 걸기 (선택)
+
+브라우저 접근과 REST API를 Basic Auth로 보호하려면:
+
+```bash
+BASIC_AUTH_USER=admin \
+BASIC_AUTH_PASSWORD='change-me' \
+node server.js
+```
+
+또는 `.env`에 추가:
+
+```
+BASIC_AUTH_USER=admin
+BASIC_AUTH_PASSWORD=change-me
+BASIC_AUTH_REALM=Obsidian Web Vault
+```
+
+`BASIC_AUTH_USER`와 `BASIC_AUTH_PASSWORD`가 **둘 다 설정된 경우에만** 인증이 활성화됩니다.
+
+### 4. 요청 제한 / 보안 헤더 (선택)
+
+기본값:
+
+```env
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=300
+AUTH_RATE_LIMIT_WINDOW_MS=600000
+AUTH_RATE_LIMIT_MAX_FAILURES=10
+SECURITY_HEADERS_ENABLED=true
+```
+
+- 일반 요청: IP당 60초에 300회
+- 인증 실패: IP당 10분에 10회
+- `SECURITY_HEADERS_ENABLED=true`면 기본 보안 헤더와 CSP를 응답에 추가
 
 ---
 
@@ -117,6 +155,8 @@ docker run -d \
   -p 5173:5173 \
   -v /path/to/vault:/vault \
   -e OBSIDIAN_VAULT_DIR=/vault \
+  -e BASIC_AUTH_USER=admin \
+  -e BASIC_AUTH_PASSWORD=change-me \
   --name obsidian-web-vault \
   obsidian-web-vault
 ```
@@ -139,6 +179,23 @@ docker run -d \
 |------|--------|------|
 | `OBSIDIAN_VAULT_DIR` | (없음) | vault 폴더 절대 경로 (미설정 시 sample 모드) |
 | `PORT` | `5173` | 서버 포트 |
+| `BASIC_AUTH_USER` | (없음) | 설정 시 Basic Auth 사용자명 |
+| `BASIC_AUTH_PASSWORD` | (없음) | 설정 시 Basic Auth 비밀번호 |
+| `BASIC_AUTH_REALM` | `Obsidian Web Vault` | 브라우저 인증 프롬프트 realm |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | 일반 요청 제한 윈도우(ms) |
+| `RATE_LIMIT_MAX_REQUESTS` | `300` | 일반 요청 제한 횟수 |
+| `AUTH_RATE_LIMIT_WINDOW_MS` | `600000` | 인증 실패 제한 윈도우(ms) |
+| `AUTH_RATE_LIMIT_MAX_FAILURES` | `10` | 인증 실패 허용 횟수 |
+| `SECURITY_HEADERS_ENABLED` | `true` | 기본 보안 헤더/CSP 활성화 여부 |
+
+---
+
+## 보안 메모
+
+- Basic Auth는 **리버스 프록시의 HTTPS 뒤에서** 사용하는 것을 권장합니다.
+- 외부에 직접 공개할 때는 평문 HTTP로 쓰지 마세요.
+- 현재 프로젝트의 인증은 **단일 사용자 보호용 1차 방어선**입니다.
+- 기본 rate limiting은 **메모리 기반 단일 프로세스**입니다. 여러 인스턴스를 띄우면 프록시/공유 저장소 기반 제한이 필요합니다.
 
 ---
 
@@ -153,5 +210,5 @@ docker run -d \
 
 ## 향후 계획
 
-- **Phase 2**: 인증 (Basic Auth / 토큰)
+- **Phase 2**: 토큰 인증, HTTPS/reverse proxy 가이드, rate limiting
 - **Phase 3**: 리치 에디터 (CodeMirror)

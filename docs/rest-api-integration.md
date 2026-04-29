@@ -175,4 +175,7 @@ GET /api/vault
 ## 보안
 
 - 경로 트래버설(`../`) 차단: 모든 경로는 vault 루트 내로 제한
-- CORS: 현재 `Access-Control-Allow-Origin: *` (Phase 2에서 인증 추가 예정)
+- Basic Auth를 켜려면 서버 환경변수 `BASIC_AUTH_USER`, `BASIC_AUTH_PASSWORD`를 함께 설정
+- 기본 rate limiting 헤더(`RateLimit-*`)와 `429 Too Many Requests` 응답 지원
+- 기본 보안 헤더/CSP는 `SECURITY_HEADERS_ENABLED=true`일 때 활성화
+- CORS: 현재 `Access-Control-Allow-Origin: *` (토큰/세분화는 후속 Phase 2 작업)

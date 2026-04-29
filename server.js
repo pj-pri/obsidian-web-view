@@ -26,6 +26,17 @@ const { getVaultRoot, handleVaultApi } = require('./vault-api/index.js');
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 5173;
 const DEFAULT_FILE = 'Obsidian Web Vault.html';
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || '';
+const BASIC_AUTH_PASSWORD = process.env.BASIC_AUTH_PASSWORD || '';
+const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Obsidian Web Vault';
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60_000;
+const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS) || 300;
+const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS) || 10 * 60_000;
+const AUTH_RATE_LIMIT_MAX_FAILURES = Number(process.env.AUTH_RATE_LIMIT_MAX_FAILURES) || 10;
+const SECURITY_HEADERS_ENABLED = process.env.SECURITY_HEADERS_ENABLED !== 'false';
+
+const requestBuckets = new Map();
+const authFailureBuckets = new Map();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -64,7 +75,103 @@ function safeResolve(urlPathname) {
   return abs;
 }
 
+function isAuthEnabled() {
+  return !!(BASIC_AUTH_USER && BASIC_AUTH_PASSWORD);
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function pruneBucketStore(store, now) {
+  for (const [key, bucket] of store.entries()) {
+    if (!bucket || bucket.resetAt <= now) store.delete(key);
+  }
+}
+
+function checkRateLimit(store, key, limit, windowMs, now = Date.now()) {
+  let bucket = store.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + windowMs };
+    store.set(key, bucket);
+  }
+
+  bucket.count += 1;
+  return {
+    allowed: bucket.count <= limit,
+    remaining: Math.max(0, limit - bucket.count),
+    resetAt: bucket.resetAt,
+  };
+}
+
+function setRateLimitHeaders(res, limit, result) {
+  res.setHeader('RateLimit-Limit', String(limit));
+  res.setHeader('RateLimit-Remaining', String(result.remaining));
+  res.setHeader('RateLimit-Reset', String(Math.max(0, Math.ceil((result.resetAt - Date.now()) / 1000))));
+}
+
+function applySecurityHeaders(res) {
+  if (!SECURITY_HEADERS_ENABLED) return;
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com",
+    "img-src 'self' data: blob:",
+    "font-src 'self' https://cdnjs.cloudflare.com data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'self'",
+    "base-uri 'self'",
+  ].join('; '));
+}
+
+function sendRateLimited(res, retrySeconds, message = 'Too many requests') {
+  res.setHeader('Retry-After', String(Math.max(1, retrySeconds)));
+  res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
+  res.end(JSON.stringify({ error: message }));
+}
+
+function sendAuthChallenge(res) {
+  res.writeHead(401, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'WWW-Authenticate': `Basic realm="${BASIC_AUTH_REALM.replace(/"/g, '\\"')}", charset="UTF-8"`,
+    'Cache-Control': 'no-cache',
+  });
+  res.end('Authentication required');
+}
+
+function isAuthorized(req) {
+  if (!isAuthEnabled() || req.method === 'OPTIONS') return true;
+  const header = req.headers.authorization || '';
+  const match = header.match(/^Basic\s+(.+)$/i);
+  if (!match) return false;
+
+  let decoded;
+  try {
+    decoded = Buffer.from(match[1], 'base64').toString('utf8');
+  } catch {
+    return false;
+  }
+
+  const sepIndex = decoded.indexOf(':');
+  if (sepIndex === -1) return false;
+  const user = decoded.slice(0, sepIndex);
+  const password = decoded.slice(sepIndex + 1);
+  return user === BASIC_AUTH_USER && password === BASIC_AUTH_PASSWORD;
+}
+
 const server = http.createServer((req, res) => {
+  applySecurityHeaders(res);
+
   let pathname;
   try {
     pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
@@ -73,6 +180,33 @@ const server = http.createServer((req, res) => {
     res.end();
     return;
   }
+
+  const now = Date.now();
+  if (requestBuckets.size > 1000 || authFailureBuckets.size > 1000) {
+    pruneBucketStore(requestBuckets, now);
+    pruneBucketStore(authFailureBuckets, now);
+  }
+
+  const clientIp = getClientIp(req);
+  const requestRate = checkRateLimit(requestBuckets, clientIp, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MS, now);
+  setRateLimitHeaders(res, RATE_LIMIT_MAX_REQUESTS, requestRate);
+  if (!requestRate.allowed) {
+    sendRateLimited(res, Math.ceil((requestRate.resetAt - now) / 1000));
+    return;
+  }
+
+  if (!isAuthorized(req)) {
+    const authRate = checkRateLimit(authFailureBuckets, clientIp, AUTH_RATE_LIMIT_MAX_FAILURES, AUTH_RATE_LIMIT_WINDOW_MS, now);
+    setRateLimitHeaders(res, AUTH_RATE_LIMIT_MAX_FAILURES, authRate);
+    if (!authRate.allowed) {
+      sendRateLimited(res, Math.ceil((authRate.resetAt - now) / 1000), 'Too many authentication attempts');
+      return;
+    }
+    sendAuthChallenge(res);
+    return;
+  }
+
+  authFailureBuckets.delete(clientIp);
 
   // API routes handle all HTTP methods (POST, PUT, DELETE, PATCH, OPTIONS, etc.)
   if (handleVaultApi(req, res, pathname)) return;
@@ -152,6 +286,15 @@ function listDir(res, dirPath) {
 server.listen(PORT, () => {
   console.log(`Static server at http://localhost:${PORT}/`);
   console.log(`Open: http://localhost:${PORT}/${encodeURIComponent(DEFAULT_FILE)}`);
+  if (isAuthEnabled()) {
+    console.log(`Basic Auth: enabled (${BASIC_AUTH_USER})`);
+  } else if (BASIC_AUTH_USER || BASIC_AUTH_PASSWORD) {
+    console.warn('Basic Auth: disabled because BASIC_AUTH_USER and BASIC_AUTH_PASSWORD must both be set.');
+  }
+  console.log(`Rate limit: ${RATE_LIMIT_MAX_REQUESTS} requests / ${Math.round(RATE_LIMIT_WINDOW_MS / 1000)}s per IP`);
+  if (isAuthEnabled()) {
+    console.log(`Auth failures: ${AUTH_RATE_LIMIT_MAX_FAILURES} attempts / ${Math.round(AUTH_RATE_LIMIT_WINDOW_MS / 1000)}s per IP`);
+  }
   const vaultRoot = getVaultRoot();
   if (vaultRoot) {
     console.log(`Vault API: http://localhost:${PORT}/api/vault`);

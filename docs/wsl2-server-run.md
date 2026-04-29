@@ -32,6 +32,32 @@ OBSIDIAN_VAULT_DIR=/path/to/vault node server.js
 PORT=8080 node server.js
 ```
 
+### Basic Auth 사용
+
+```bash
+BASIC_AUTH_USER=admin BASIC_AUTH_PASSWORD=change-me node server.js
+```
+
+`.env`를 쓰는 경우:
+
+```bash
+cp .env.example .env
+# BASIC_AUTH_USER / BASIC_AUTH_PASSWORD 추가
+node server.js
+```
+
+### 요청 제한 / 보안 헤더
+
+기본값:
+
+```bash
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=300
+AUTH_RATE_LIMIT_WINDOW_MS=600000
+AUTH_RATE_LIMIT_MAX_FAILURES=10
+SECURITY_HEADERS_ENABLED=true
+```
+
 ## Docker로 실행
 
 ```bash
@@ -75,6 +101,14 @@ ss -ltnp | grep ':5173'
 |------|--------|------|
 | `OBSIDIAN_VAULT_DIR` | (없음) | vault 폴더 절대 경로. 미설정 시 샘플 모드 |
 | `PORT` | `5173` | 서버 포트 |
+| `BASIC_AUTH_USER` | (없음) | 설정 시 Basic Auth 사용자명 |
+| `BASIC_AUTH_PASSWORD` | (없음) | 설정 시 Basic Auth 비밀번호 |
+| `BASIC_AUTH_REALM` | `Obsidian Web Vault` | 인증 프롬프트 realm |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | 일반 요청 제한 윈도우(ms) |
+| `RATE_LIMIT_MAX_REQUESTS` | `300` | 일반 요청 제한 횟수 |
+| `AUTH_RATE_LIMIT_WINDOW_MS` | `600000` | 인증 실패 제한 윈도우(ms) |
+| `AUTH_RATE_LIMIT_MAX_FAILURES` | `10` | 인증 실패 허용 횟수 |
+| `SECURITY_HEADERS_ENABLED` | `true` | 기본 보안 헤더/CSP 활성화 여부 |
 
 ## 동작 모드
 

@@ -211,9 +211,10 @@ Node.js 서버 (server.js)
 
 ### Phase 2 — 인증 & 보안
 
-- [ ] HTTP Basic Auth 또는 토큰 기반 인증 미들웨어
+- [x] HTTP Basic Auth 미들웨어
+- [ ] 토큰 기반 인증 미들웨어
 - [ ] HTTPS 설정 가이드 (reverse proxy: nginx/caddy)
-- [ ] Rate limiting
+- [x] Rate limiting
 
 ### Phase 3 — 에디터 업그레이드
 
