@@ -233,9 +233,9 @@ function ShortcutsModal({ onClose }) {
   );
 }
 
-function buildTree(files) {
+function buildTree(paths) {
   const root = { folders: {}, files: [] };
-  Object.keys(files).sort().forEach(path => {
+  (paths || []).slice().sort().forEach(path => {
     const parts = path.split('/');
     const fname = parts.pop();
     let node = root;
@@ -380,8 +380,17 @@ function normalizeTabs(fileMap, tabs, fallbackPath) {
   return nextTabs;
 }
 
+function buildPresenceMap(paths) {
+  const out = {};
+  (paths || []).forEach((filePath) => {
+    out[filePath] = true;
+  });
+  return out;
+}
+
 function App() {
   const [files, setFiles] = useState(() => ({ ...window.SAMPLE_VAULT }));
+  const [serverFileIndex, setServerFileIndex] = useState([]);
   const [openTabs, setOpenTabs] = useState([SAMPLE_DEFAULT_FILE]);
   const [activeTab, setActiveTab] = useState(SAMPLE_DEFAULT_FILE);
   const [collapsed, setCollapsed] = useState(new Set());
@@ -409,6 +418,9 @@ function App() {
   const [saveStatus, setSaveStatus] = useState('saved'); // 'saved'|'saving'|'unsaved'|'error'
   const [ctxMenu, setCtxMenu] = useState(null); // { x, y, type: 'file'|'folder', path }
   const [serverSearchResults, setServerSearchResults] = useState(null); // null | Array
+  const [loadingFiles, setLoadingFiles] = useState(() => new Set());
+  const savedContentsRef = useRef({});
+  const pendingSearchJumpRef = useRef(null);
 
   // Persistence
   useEffect(() => {
@@ -423,11 +435,15 @@ function App() {
       }
     };
 
-    const applyVaultState = (nextFiles, source, preferredPath, savedState, nextRoot = '') => {
-      const firstPath = firstFilePath(nextFiles, preferredPath);
-      const nextTabs = normalizeTabs(nextFiles, savedState?.openTabs, firstPath);
-      const nextActive = nextFiles[savedState?.activeTab] ? savedState.activeTab : (nextTabs[0] || firstPath);
+    const applyVaultState = (nextFiles, source, preferredPath, savedState, nextRoot = '', nextServerIndex = []) => {
+      const presenceMap = source === 'server'
+        ? buildPresenceMap(nextServerIndex.map(file => file.path))
+        : nextFiles;
+      const firstPath = firstFilePath(presenceMap, preferredPath);
+      const nextTabs = normalizeTabs(presenceMap, savedState?.openTabs, firstPath);
+      const nextActive = presenceMap[savedState?.activeTab] ? savedState.activeTab : (nextTabs[0] || firstPath);
       setFiles(nextFiles);
+      setServerFileIndex(nextServerIndex);
       setOpenTabs(nextTabs);
       setActiveTab(nextActive);
       setVaultSource(source);
@@ -437,10 +453,14 @@ function App() {
     const loadInitialState = async () => {
       const saved = readSavedState();
       try {
-        const response = await fetch(getVaultApiUrl('/api/vault'), { cache: 'no-store' });
+        const response = await fetch(getVaultApiUrl('/api/vault/files'), { cache: 'no-store' });
         if (!cancelled && response.ok) {
           const data = await response.json();
-          applyVaultState(data.files || {}, 'server', data.defaultFile, saved, data.root || '');
+          const nextIndex = data.files || [];
+          const presenceMap = buildPresenceMap(nextIndex.map(file => file.path));
+          const defaultFile = firstFilePath(presenceMap, saved?.activeTab);
+          savedContentsRef.current = {};
+          applyVaultState({}, 'server', defaultFile, saved, '', nextIndex);
           setStorageReady(true);
           return;
         }
@@ -467,6 +487,65 @@ function App() {
     if (vaultSource !== 'server') payload.files = files;
     localStorage.setItem('obsidian-vault-state', JSON.stringify(payload));
   }, [files, activeTab, openTabs, storageReady, vaultSource]);
+
+  const allPaths = useMemo(() => (
+    vaultSource === 'server'
+      ? serverFileIndex.map(file => file.path)
+      : Object.keys(files)
+  ), [vaultSource, serverFileIndex, files]);
+
+  const filePresenceMap = useMemo(() => buildPresenceMap(allPaths), [allPaths]);
+
+  const fetchFileContent = useCallback(async (filePath, { force = false } = {}) => {
+    if (!filePath) return null;
+    if (!force && Object.prototype.hasOwnProperty.call(files, filePath)) return files[filePath];
+    setLoadingFiles(prev => {
+      const next = new Set(prev);
+      next.add(filePath);
+      return next;
+    });
+    try {
+      const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(filePath)), { cache: 'no-store' });
+      if (!response.ok) throw new Error('Failed to load file');
+      const data = await response.json();
+      setFiles(curr => ({ ...curr, [filePath]: data.content || '' }));
+      savedContentsRef.current[filePath] = data.content || '';
+      return data.content || '';
+    } finally {
+      setLoadingFiles(prev => {
+        const next = new Set(prev);
+        next.delete(filePath);
+        return next;
+      });
+    }
+  }, [files]);
+
+  const syncUpdatedRefs = useCallback(async (paths) => {
+    const uniquePaths = [...new Set((paths || []).filter(path => path && Object.prototype.hasOwnProperty.call(files, path)))];
+    if (!uniquePaths.length) return;
+    const refreshed = await Promise.all(uniquePaths.map(async (path) => {
+      const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(path)), { cache: 'no-store' });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return { path, content: data.content || '' };
+    }));
+    const nextEntries = refreshed.filter(Boolean);
+    if (!nextEntries.length) return;
+    setFiles(curr => {
+      const next = { ...curr };
+      nextEntries.forEach(({ path, content }) => {
+        next[path] = content;
+        savedContentsRef.current[path] = content;
+      });
+      return next;
+    });
+  }, [files]);
+
+  useEffect(() => {
+    if (vaultSource !== 'server' || !activeTab || !filePresenceMap[activeTab]) return;
+    if (Object.prototype.hasOwnProperty.call(files, activeTab)) return;
+    void fetchFileContent(activeTab);
+  }, [vaultSource, activeTab, filePresenceMap, files, fetchFileContent]);
 
   // Apply theme
   useEffect(() => {
@@ -496,10 +575,11 @@ function App() {
   };
 
   // File operations
-  const openFile = useCallback((path) => {
+  const openFile = useCallback((path, options = {}) => {
     if (!openTabs.includes(path)) setOpenTabs(t => [...t, path]);
     setActiveTab(path);
     if (graphInMain) setGraphInMain(false);
+    if (options.lineNo) pendingSearchJumpRef.current = { path, lineNo: options.lineNo };
   }, [openTabs, graphInMain]);
   const closeTab = useCallback((path, e) => {
     e?.stopPropagation();
@@ -520,7 +600,7 @@ function App() {
 
   // Link click handler
   const handleInternalLink = useCallback((target) => {
-    const candidates = Object.keys(files);
+    const candidates = allPaths;
     let match = candidates.find(p => p === target + '.md' || p === target);
     if (!match) match = candidates.find(p => p.endsWith('/' + target + '.md') || p.endsWith('/' + target));
     if (match) {
@@ -528,9 +608,12 @@ function App() {
     } else {
       const newPath = target + '.md';
       setFiles(f => ({ ...f, [newPath]: `# ${target}\n\n` }));
+      if (vaultSource === 'server') {
+        setServerFileIndex(index => index.some(file => file.path === newPath) ? index : [...index, { path: newPath, mtime: Date.now(), size: 0 }]);
+      }
       openFile(newPath);
     }
-  }, [files, openFile]);
+  }, [allPaths, openFile, vaultSource]);
 
   const handleTagClick = useCallback((tag) => {
     setRightTab('tags');
@@ -560,8 +643,20 @@ function App() {
           body: JSON.stringify({ newPath }),
         });
         if (!r.ok) { alert('Rename failed'); return; }
+        const data = await r.json();
+        savedContentsRef.current[newPath] = savedContentsRef.current[targetPath];
+        delete savedContentsRef.current[targetPath];
+        setServerFileIndex(index => index.map(file => file.path === targetPath ? { ...file, path: newPath } : file));
+        await syncUpdatedRefs(data.updatedRefs);
       }
-      setFiles(f => { const n = { ...f }; n[newPath] = n[targetPath]; delete n[targetPath]; return n; });
+      setFiles(f => {
+        const n = { ...f };
+        if (Object.prototype.hasOwnProperty.call(n, targetPath)) {
+          n[newPath] = n[targetPath];
+          delete n[targetPath];
+        }
+        return n;
+      });
       setOpenTabs(t => t.map(p => p === targetPath ? newPath : p));
       setActiveTab(a => a === targetPath ? newPath : a);
     }
@@ -571,6 +666,8 @@ function App() {
       if (vaultSource === 'server') {
         const r = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(targetPath)), { method: 'DELETE' });
         if (!r.ok) { alert('Delete failed'); return; }
+        setServerFileIndex(index => index.filter(file => file.path !== targetPath));
+        delete savedContentsRef.current[targetPath];
       }
       setFiles(f => { const n = { ...f }; delete n[targetPath]; return n; });
       closeTab(targetPath);
@@ -588,6 +685,8 @@ function App() {
           body: JSON.stringify({ content }),
         });
         if (!r.ok) { alert('Create failed'); return; }
+        savedContentsRef.current[filePath] = content;
+        setServerFileIndex(index => [...index, { path: filePath, mtime: Date.now(), size: content.length }]);
       }
       setFiles(f => ({ ...f, [filePath]: content }));
       openFile(filePath);
@@ -599,17 +698,33 @@ function App() {
       if (!newName || newName === oldName) return;
       const parentDir = targetPath.includes('/') ? targetPath.split('/').slice(0, -1).join('/') + '/' : '';
       const newFolderPath = parentDir + newName;
-      const toRename = Object.keys(files).filter(p => p === targetPath || p.startsWith(targetPath + '/'));
+      const toRename = allPaths.filter(p => p === targetPath || p.startsWith(targetPath + '/'));
       for (const fp of toRename) {
         const newFilePath = newFolderPath + fp.slice(targetPath.length);
         if (vaultSource === 'server') {
-          await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(fp)), {
+          const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(fp)), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ newPath: newFilePath }),
           });
+          if (!response.ok) {
+            alert('Rename folder failed');
+            return;
+          }
+          const data = await response.json();
+          savedContentsRef.current[newFilePath] = savedContentsRef.current[fp];
+          delete savedContentsRef.current[fp];
+          setServerFileIndex(index => index.map(file => file.path === fp ? { ...file, path: newFilePath } : file));
+          await syncUpdatedRefs(data.updatedRefs);
         }
-        setFiles(f => { const n = { ...f }; n[newFilePath] = n[fp]; delete n[fp]; return n; });
+        setFiles(f => {
+          const n = { ...f };
+          if (Object.prototype.hasOwnProperty.call(n, fp)) {
+            n[newFilePath] = n[fp];
+            delete n[fp];
+          }
+          return n;
+        });
         setOpenTabs(t => t.map(p => p === fp ? newFilePath : p));
         setActiveTab(a => a === fp ? newFilePath : a);
       }
@@ -639,25 +754,25 @@ function App() {
     if (!activeTab || !files[activeTab]) return [];
     const links = window.extractLinks(files[activeTab]);
     return [...new Set(links)].map(t => {
-      const candidates = Object.keys(files);
+      const candidates = allPaths;
       const match = candidates.find(p => p === t + '.md' || p === t ||
                      p.endsWith('/' + t + '.md') || p.endsWith('/' + t));
       return { target: t, exists: !!match, path: match };
     });
-  }, [activeTab, files]);
+  }, [activeTab, files, allPaths]);
 
   // Graph data
   const graphData = useMemo(() => {
     const nodesMap = {};
     const linksArr = [];
-    Object.keys(files).forEach(p => {
+    allPaths.forEach(p => {
       const label = p.replace(/\.md$/, '').split('/').pop();
       nodesMap[p] = { id: p, label, degree: 0 };
     });
     Object.entries(files).forEach(([p, content]) => {
       const links = window.extractLinks(content);
       links.forEach(t => {
-        const candidates = Object.keys(files);
+        const candidates = allPaths;
         const targetPath = candidates.find(x => x === t + '.md' || x === t ||
                            x.endsWith('/' + t + '.md') || x.endsWith('/' + t));
         if (targetPath && targetPath !== p) {
@@ -668,7 +783,7 @@ function App() {
       });
     });
     return { nodes: Object.values(nodesMap), links: linksArr };
-  }, [files]);
+  }, [files, allPaths]);
 
   // Tag aggregation
   const allTags = useMemo(() => {
@@ -682,25 +797,20 @@ function App() {
   }, [files]);
 
   // Filtered tree by search
-  const filteredFiles = useMemo(() => {
-    if (!search) return files;
+  const filteredPaths = useMemo(() => {
+    if (!search) return allPaths;
     const q = search.toLowerCase();
     if (q.startsWith('#')) {
       const tag = q.slice(1);
-      const result = {};
-      Object.entries(files).forEach(([p, c]) => {
-        if (window.extractTags(c).some(t => t.toLowerCase().includes(tag))) result[p] = c;
+      return allPaths.filter((p) => {
+        const content = files[p] || '';
+        return content && window.extractTags(content).some(t => t.toLowerCase().includes(tag));
       });
-      return result;
     }
-    const result = {};
-    Object.entries(files).forEach(([p, c]) => {
-      if (p.toLowerCase().includes(q) || c.toLowerCase().includes(q)) result[p] = c;
-    });
-    return result;
-  }, [files, search]);
+    return allPaths.filter((p) => p.toLowerCase().includes(q) || (files[p] || '').toLowerCase().includes(q));
+  }, [files, search, allPaths]);
 
-  const tree = useMemo(() => buildTree(filteredFiles), [filteredFiles]);
+  const tree = useMemo(() => buildTree(filteredPaths), [filteredPaths]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -733,17 +843,57 @@ function App() {
   // Command palette items
   const cmdItems = useMemo(() => {
     const q = cmdQuery.toLowerCase();
-    const fileItems = Object.keys(files)
+    const fileItems = allPaths
       .filter(p => !q || p.toLowerCase().includes(q))
       .slice(0, 30)
       .map(p => ({ label: p.replace(/\.md$/, ''), sub: p, action: () => openFile(p) }));
     return fileItems;
-  }, [cmdQuery, files]);
+  }, [cmdQuery, allPaths, openFile]);
 
   const runCmd = (item) => {
     item.action();
     setCmdOpen(false);
   };
+
+  const insertTextIntoEditor = useCallback((text) => {
+    if (!activeTab) return;
+    const ta = textareaRef.current;
+    if (!ta) {
+      updateContent(activeTab, (files[activeTab] || '') + text);
+      return;
+    }
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const current = files[activeTab] || '';
+    updateContent(activeTab, current.slice(0, start) + text + current.slice(end));
+    requestAnimationFrame(() => {
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = start + text.length;
+    });
+  }, [activeTab, files]);
+
+  const uploadAttachmentFiles = useCallback(async (fileList) => {
+    const uploads = await Promise.all(fileList.map(file => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const response = await fetch(getVaultApiUrl('/api/vault/attachments'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: file.name || `image-${Date.now()}.png`, data: reader.result }),
+          });
+          if (!response.ok) throw new Error('Attachment upload failed');
+          const data = await response.json();
+          resolve(`![${data.filename}](${data.path})`);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      reader.onerror = () => reject(reader.error || new Error('File read failed'));
+      reader.readAsDataURL(file);
+    })));
+    insertTextIntoEditor(uploads.join('\n'));
+  }, [insertTextIntoEditor]);
 
   // Drop handling
   useEffect(() => {
@@ -754,12 +904,33 @@ function App() {
     const onDrop = async (e) => {
       e.preventDefault();
       setDragOver(false);
-      const dropped = [...(e.dataTransfer.files || [])].filter(f => f.name.endsWith('.md'));
+      const droppedFiles = [...(e.dataTransfer.files || [])];
+      const droppedImages = droppedFiles.filter(f => f.type.startsWith('image/'));
+      if (vaultSource === 'server' && activeTab && droppedImages.length) {
+        try {
+          await uploadAttachmentFiles(droppedImages);
+        } catch (error) {
+          console.error('Attachment upload failed:', error);
+        }
+        return;
+      }
+
+      const dropped = droppedFiles.filter(f => f.name.endsWith('.md'));
       if (!dropped.length) return;
       const additions = {};
-      for (const f of dropped) {
-        const text = await f.text();
-        additions[f.name] = text;
+      for (const file of dropped) {
+        const text = await file.text();
+        if (vaultSource === 'server') {
+          const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(file.name)), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: text }),
+          });
+          if (!response.ok) continue;
+          savedContentsRef.current[file.name] = text;
+          setServerFileIndex(index => index.some(entry => entry.path === file.name) ? index : [...index, { path: file.name, mtime: Date.now(), size: text.length }]);
+        }
+        additions[file.name] = text;
       }
       setFiles(curr => ({ ...curr, ...additions }));
       const first = Object.keys(additions)[0];
@@ -773,7 +944,7 @@ function App() {
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [openFile]);
+  }, [openFile, vaultSource, activeTab, uploadAttachmentFiles]);
 
   // Upload via input
   const fileInputRef = useRef(null);
@@ -786,6 +957,16 @@ function App() {
     const additions = {};
     for (const f of list) {
       const text = await f.text();
+      if (vaultSource === 'server') {
+        const response = await fetch(getVaultApiUrl('/api/vault/files/' + encodePath(f.name)), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: text }),
+        });
+        if (!response.ok) continue;
+        savedContentsRef.current[f.name] = text;
+        setServerFileIndex(index => index.some(file => file.path === f.name) ? index : [...index, { path: f.name, mtime: Date.now(), size: text.length }]);
+      }
       additions[f.name] = text;
     }
     setFiles(curr => ({ ...curr, ...additions }));
@@ -801,10 +982,16 @@ function App() {
   ].filter(Boolean).join(' ');
 
   const activeContent = activeTab ? files[activeTab] || '' : '';
+  const activeFileLoading = vaultSource === 'server' && !!activeTab && loadingFiles.has(activeTab);
 
   // Auto-save to server
   useEffect(() => {
     if (vaultSource !== 'server' || !activeTab || !storageReady) return;
+    if (loadingFiles.has(activeTab)) return;
+    if (savedContentsRef.current[activeTab] === activeContent) {
+      setSaveStatus('saved');
+      return;
+    }
     setSaveStatus('unsaved');
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
@@ -815,13 +1002,18 @@ function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: activeContent }),
         });
-        setSaveStatus(r.ok ? 'saved' : 'error');
+        if (r.ok) {
+          savedContentsRef.current[activeTab] = activeContent;
+          setSaveStatus('saved');
+        } else {
+          setSaveStatus('error');
+        }
       } catch {
         setSaveStatus('error');
       }
     }, 1500);
     return () => clearTimeout(saveTimerRef.current);
-  }, [activeContent, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeContent, activeTab, vaultSource, storageReady, loadingFiles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Server-side search
   useEffect(() => {
@@ -933,38 +1125,17 @@ function App() {
     e.preventDefault();
     const file = imageItem.getAsFile();
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const r = await fetch(getVaultApiUrl('/api/vault/attachments'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: file.name || `image-${Date.now()}.png`, data: reader.result }),
-        });
-        if (!r.ok) return;
-        const data = await r.json();
-        const markdown = `![${data.filename}](${data.path})`;
-        const ta = textareaRef.current;
-        if (ta) {
-          const start = ta.selectionStart;
-          const end = ta.selectionEnd;
-          const current = files[activeTab] || '';
-          updateContent(activeTab, current.slice(0, start) + markdown + current.slice(end));
-          requestAnimationFrame(() => {
-            ta.selectionStart = ta.selectionEnd = start + markdown.length;
-          });
-        }
-      } catch (err) {
-        console.error('Attachment upload failed:', err);
-      }
-    };
-    reader.readAsDataURL(file);
-  }, [vaultSource, activeTab, files]); // eslint-disable-line react-hooks/exhaustive-deps
+    try {
+      await uploadAttachmentFiles([file]);
+    } catch (err) {
+      console.error('Attachment upload failed:', err);
+    }
+  }, [vaultSource, activeTab, uploadAttachmentFiles]);
 
   const activePreviewHtml = useMemo(() => {
     if (!activeTab) return '';
-    return window.parseMarkdown(activeContent, { vaultFiles: Object.keys(files) });
-  }, [activeContent, files, activeTab]);
+    return window.parseMarkdown(activeContent, { vaultFiles: allPaths });
+  }, [activeContent, allPaths, activeTab]);
 
   const toc = useMemo(() => {
     if (!activeContent || !window.extractToc) return [];
@@ -1005,6 +1176,24 @@ function App() {
     if (!window.hljs || !previewRef.current) return;
     previewRef.current.querySelectorAll('pre code[class]').forEach(b => window.hljs.highlightElement(b));
   }, [activePreviewHtml]);
+
+  useEffect(() => {
+    const pending = pendingSearchJumpRef.current;
+    if (!pending || pending.path !== activeTab || activeFileLoading || !textareaRef.current) return;
+    const textarea = textareaRef.current;
+    const lines = activeContent.split('\n');
+    const lineIndex = Math.max(0, Math.min((pending.lineNo || 1) - 1, lines.length - 1));
+    let offset = 0;
+    for (let i = 0; i < lineIndex; i++) offset += lines[i].length + 1;
+    const lineText = lines[lineIndex] || '';
+    pendingSearchJumpRef.current = null;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset + lineText.length);
+      const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 22;
+      textarea.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight * 2);
+    });
+  }, [activeTab, activeContent, activeFileLoading]);
 
   // Swap hljs theme stylesheet when app theme changes
   useEffect(() => {
@@ -1146,6 +1335,8 @@ function App() {
                   body: JSON.stringify({ content }),
                 });
                 if (!r.ok) { alert('Create failed'); return; }
+                savedContentsRef.current[filePath] = content;
+                setServerFileIndex(index => [...index, { path: filePath, mtime: Date.now(), size: content.length }]);
               }
               setFiles(f => ({ ...f, [filePath]: content }));
               openFile(filePath);
@@ -1171,7 +1362,7 @@ function App() {
                 </div>
               )}
               {serverSearchResults.map(r => (
-                <div key={r.path} className="sr-item" onClick={() => openFile(r.path)}>
+                <div key={r.path} className="sr-item" onClick={() => openFile(r.path, { lineNo: r.contexts[0]?.lineNo })}>
                   <div className="sr-path">{r.path.replace(/\.md$/, '')}</div>
                   {r.contexts.map((ctx, i) => (
                     <div key={i} className="sr-ctx">{ctx.line}</div>
@@ -1191,7 +1382,7 @@ function App() {
                 toggle={toggleFolder}
                 onCtxMenu={(e, type, path) => setCtxMenu({ x: e.clientX, y: e.clientY, type, path })}
               />
-              {Object.keys(filteredFiles).length === 0 && (
+              {filteredPaths.length === 0 && (
                 <div style={{padding: 20, textAlign: 'center', color: 'var(--text-faint)', fontSize: 12}}>
                   No files match "{search}"
                 </div>
@@ -1291,6 +1482,11 @@ function App() {
               <div className="source-pane" style={{padding: 0, display: 'flex', flexDirection: 'column'}}>
                 <SnippetToolbar taRef={textareaRef} />
                 <div style={{flex: 1, overflow: 'auto', padding: '32px 8%', position: 'relative'}}>
+                  {activeFileLoading && (
+                    <div style={{position: 'absolute', top: 12, right: '8%', color: 'var(--text-faint)', fontSize: 12}}>
+                      Loading note…
+                    </div>
+                  )}
                   <textarea
                     key={activeTab}
                     ref={textareaRef}
@@ -1303,6 +1499,7 @@ function App() {
                     onPaste={handleEditorPaste}
                     onBlur={() => setTimeout(() => setSlashMenu(null), 150)}
                     onScroll={() => setSlashMenu(m => m ? null : m)}
+                    disabled={activeFileLoading}
                     spellCheck={false}
                   />
                   {slashMenu && (
@@ -1434,7 +1631,7 @@ function App() {
 
       {/* Status bar */}
       <div className="statusbar">
-        <div className="sb-item">{Object.keys(files).length} files</div>
+        <div className="sb-item">{allPaths.length} files</div>
         <div className="sb-item">·</div>
         <div className="sb-item">{graphData.links.length} links</div>
         {activeTab && <><div className="sb-item">·</div>
