@@ -216,6 +216,7 @@ Node.js 서버 (server.js)
 - [ ] 토큰 기반 인증 미들웨어
 - [ ] HTTPS 설정 가이드 (reverse proxy: nginx/caddy)
 - [x] Rate limiting
+- [x] 운영 전 후속 체크리스트 문서화 (`docs/security-followups.md`)
 
 ### Phase 3 — 에디터 업그레이드
 

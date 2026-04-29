@@ -247,6 +247,9 @@ docker run -d \
 
 PM2, Docker, systemd 같은 런타임에서는 이 stdout/stderr 출력을 그대로 수집하면 됩니다.
 
+운영 전 나중에 다시 확인해야 할 항목은
+[`docs/security-followups.md`](./docs/security-followups.md)에 체크리스트로 정리해두었습니다.
+
 ---
 
 ## 노트 규칙
